@@ -619,9 +619,6 @@ def main():
     )
 
     # Service time configuration
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("⏱️ Service Time")
-
     # Get default method from config
     default_method = config.get_default_service_time_method()
     default_index = 0 if default_method == "smart" else 1
@@ -674,6 +671,7 @@ def main():
         fixed_service_time = None  # Not used in smart mode
 
     # File upload
+    st.sidebar.markdown("---")
     st.sidebar.header("Upload Orders")
     uploaded_file = st.sidebar.file_uploader(
         "Choose a CSV file",
