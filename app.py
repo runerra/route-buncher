@@ -679,21 +679,173 @@ def main():
         help="Upload CSV with order data"
     )
 
-    # Sample file button
-    if st.sidebar.button("📋 Load Sample File", use_container_width=True, help="Load the included sample orders CSV"):
-        import os
-        sample_path = "sample_orders.csv"
-        if os.path.exists(sample_path):
-            # Read the sample file and store it in session state
-            with open(sample_path, 'rb') as f:
-                st.session_state.sample_file_content = f.read()
-            st.session_state.use_sample_file = True
-            st.success("✅ Sample file loaded! Click Run to optimize.")
-        else:
-            st.error("❌ Sample file not found")
+    # Sample file buttons
+    col_sample1, col_sample2 = st.sidebar.columns(2)
+
+    with col_sample1:
+        if st.button("📋 Load Sample", use_container_width=True, help="Load the included sample orders CSV"):
+            import os
+            sample_path = "sample_orders.csv"
+            if os.path.exists(sample_path):
+                # Read the sample file and store it in session state
+                with open(sample_path, 'rb') as f:
+                    st.session_state.sample_file_content = f.read()
+                st.session_state.use_sample_file = True
+                st.session_state.use_random_sample = False
+                st.success("✅ Sample file loaded!")
+            else:
+                st.error("❌ Sample file not found")
+
+    with col_sample2:
+        if st.button("🎲 Random Sample", use_container_width=True, help="Generate random orders for testing"):
+            # Set flag to show parameter questions
+            st.session_state.show_random_sample_questions = True
+            st.rerun()
+
+    # Handle random sample generation with interactive form
+    if st.session_state.get('show_random_sample_questions', False):
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("🎲 Random Sample Settings")
+
+        with st.sidebar.form("random_sample_form"):
+            st.markdown("**Configure your random test data:**")
+
+            order_count = st.selectbox(
+                "How many orders?",
+                options=["10 orders", "25 orders", "50 orders", "100 orders"],
+                index=1,
+                help="Number of random orders to generate"
+            )
+
+            spread = st.selectbox(
+                "Geographic spread?",
+                options=[
+                    "Tight cluster (5 mi radius)",
+                    "Medium spread (10 mi radius)",
+                    "Wide area (20 mi radius)"
+                ],
+                index=1,
+                help="How spread out should addresses be?"
+            )
+
+            size_mix = st.selectbox(
+                "Order size mix?",
+                options=[
+                    "Small orders (2-10 units)",
+                    "Mixed sizes (2-40 units)",
+                    "Large orders (20-50 units)"
+                ],
+                index=1,
+                help="Distribution of order sizes"
+            )
+
+            early_pct = st.selectbox(
+                "Early delivery allowed?",
+                options=["None (0%)", "Some (25%)", "Half (50%)", "Most (75%)"],
+                index=2,
+                help="Percentage of orders allowing early delivery"
+            )
+
+            col1, col2 = st.columns(2)
+            with col1:
+                generate_btn = st.form_submit_button("✅ Generate", type="primary", use_container_width=True)
+            with col2:
+                cancel_btn = st.form_submit_button("❌ Cancel", use_container_width=True)
+
+            if cancel_btn:
+                st.session_state.show_random_sample_questions = False
+                st.rerun()
+
+            if generate_btn:
+                # Generate random sample based on form inputs
+                import random
+
+                # Parse form values
+                num_orders = int(order_count.split()[0])
+
+                if "5 mi" in spread:
+                    radius_miles = 5
+                elif "20 mi" in spread:
+                    radius_miles = 20
+                else:
+                    radius_miles = 10
+
+                if "Small" in size_mix:
+                    unit_min, unit_max = 2, 10
+                elif "Large" in size_mix:
+                    unit_min, unit_max = 20, 50
+                else:
+                    unit_min, unit_max = 2, 40
+
+                if "None" in early_pct:
+                    early_percentage = 0
+                elif "Some" in early_pct:
+                    early_percentage = 25
+                elif "Most" in early_pct:
+                    early_percentage = 75
+                else:
+                    early_percentage = 50
+
+                # Generate random orders
+                first_names = ["John", "Sarah", "Michael", "Emily", "David", "Jessica", "James", "Amanda",
+                              "Robert", "Lisa", "William", "Jennifer", "Richard", "Michelle", "Joseph",
+                              "Karen", "Thomas", "Nancy", "Charles", "Betty", "Daniel", "Linda", "Matthew",
+                              "Elizabeth", "Anthony", "Barbara", "Mark", "Susan", "Donald", "Margaret"]
+
+                last_names = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis",
+                             "Rodriguez", "Martinez", "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson",
+                             "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee", "Thompson", "White",
+                             "Harris", "Clark", "Lewis", "Robinson", "Walker", "Young", "Hall"]
+
+                # Detroit area streets and cities
+                streets = ["Main St", "Oak Ave", "Maple Dr", "Washington Blvd", "Jefferson Ave", "Woodward Ave",
+                          "Gratiot Ave", "Grand River Ave", "Michigan Ave", "Fort St", "Vernor Hwy", "Warren Ave",
+                          "Joy Rd", "Plymouth Rd", "7 Mile Rd", "8 Mile Rd", "Livernois Ave", "Greenfield Rd",
+                          "Southfield Rd", "Telegraph Rd", "Dequindre Rd", "Van Dyke Ave", "Schoenherr Rd"]
+
+                cities = ["Detroit", "Dearborn", "Taylor", "Lincoln Park", "Allen Park", "Southgate", "Wyandotte",
+                         "Riverview", "Trenton", "Flat Rock", "Romulus", "Westland", "Garden City", "Inkster",
+                         "Redford", "Livonia", "Plymouth", "Canton", "Novi", "Farmington Hills"]
+
+                zip_bases = [48120, 48124, 48126, 48146, 48180, 48183, 48184, 48186, 48192, 48195]
+
+                # Generate CSV content
+                csv_content = "orderID,customer_name,delivery_address,number_of_units,early_ok,delivery_window_start,delivery_window_end\n"
+
+                for i in range(num_orders):
+                    order_id = 90000 + i
+                    customer_name = f"{random.choice(first_names)} {random.choice(last_names)}"
+
+                    # Generate address
+                    street_num = random.randint(100, 9999)
+                    street = random.choice(streets)
+                    city = random.choice(cities)
+                    zip_code = random.choice(zip_bases) + random.randint(0, 20)
+                    delivery_address = f"{street_num} {street} {city} {zip_code}"
+
+                    # Generate units
+                    units = random.randint(unit_min, unit_max)
+
+                    # Early delivery allowed?
+                    early_ok = "Yes" if random.randint(1, 100) <= early_percentage else "No"
+
+                    # Delivery window (all same window for now)
+                    window_start = "09:00 AM"
+                    window_end = "11:00 AM"
+
+                    csv_content += f'{order_id},"{customer_name}","{delivery_address}",{units},{early_ok},{window_start},{window_end}\n'
+
+                # Store generated CSV
+                st.session_state.sample_file_content = csv_content.encode('utf-8')
+                st.session_state.use_random_sample = True
+                st.session_state.use_sample_file = False
+                st.session_state.show_random_sample_questions = False
+
+                st.success(f"✅ Generated {num_orders} random orders! Scroll down and click Run to optimize.")
+                st.rerun()
 
     # Use sample file if button was clicked
-    if st.session_state.get('use_sample_file', False) and uploaded_file is None:
+    if (st.session_state.get('use_sample_file', False) or st.session_state.get('use_random_sample', False)) and uploaded_file is None:
         from io import BytesIO
         uploaded_file = BytesIO(st.session_state.sample_file_content)
         uploaded_file.name = "sample_orders.csv"
