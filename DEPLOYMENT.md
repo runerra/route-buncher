@@ -42,12 +42,14 @@ GOOGLE_MAPS_API_KEY = "your-google-maps-api-key-here"
 ANTHROPIC_API_KEY = "your-anthropic-api-key-here"
 DEPOT_ADDRESS = "3710 Dix Hwy Lincoln Park, MI 48146"
 DEFAULT_VEHICLE_CAPACITY = "300"
+APP_PASSWORD = "spaceCowboy"
 ```
 
 **IMPORTANT**: Replace the placeholder values with your actual API keys:
 - Get your Google Maps API key from your `.env` file
 - Get your Anthropic API key from your `.env` file
-- Keep the DEPOT_ADDRESS and DEFAULT_VEHICLE_CAPACITY as shown
+- Keep the DEPOT_ADDRESS, DEFAULT_VEHICLE_CAPACITY, and APP_PASSWORD as shown
+- Change APP_PASSWORD if you want a different password
 
 5. Click **"Save"**
 6. The app will automatically restart with the secrets loaded
@@ -68,6 +70,8 @@ https://runerra-route-buncher-xxxxx.streamlit.app
 
 Share this URL with anyone who needs to use the route optimizer!
 
+**🔒 Password Protection**: When users visit the app, they'll be prompted to enter a password. The default password is **`spaceCowboy`** (set in the APP_PASSWORD secret). Share this password only with authorized users.
+
 ## What Gets Deployed
 
 When you deploy, Streamlit Cloud will:
@@ -82,6 +86,7 @@ When you deploy, Streamlit Cloud will:
 
 All features work in the cloud deployment:
 
+- ✅ Password protection (login required)
 - ✅ CSV upload and parsing
 - ✅ Google Maps geocoding and routing
 - ✅ Route optimization (3 cuts)
@@ -89,6 +94,52 @@ All features work in the cloud deployment:
 - ✅ AI chat assistant (Claude)
 - ✅ Dispatcher sandbox
 - ✅ KPI metrics and visualizations
+
+## Password Protection
+
+The app requires a password to access. This prevents unauthorized users from accessing your route optimization tool.
+
+### How It Works
+
+1. When users visit the app URL, they see a login screen
+2. They must enter the correct password (default: `spaceCowboy`)
+3. Once authenticated, they can use all features
+4. The session persists until they close the browser or clear cookies
+
+### Changing the Password
+
+To change the password:
+
+1. Go to Streamlit Cloud dashboard → Settings → Secrets
+2. Change the `APP_PASSWORD` value to your new password
+3. Click "Save"
+4. The app will restart with the new password
+
+Example:
+```toml
+APP_PASSWORD = "myNewSecurePassword123"
+```
+
+### Security Notes
+
+- Password is stored in Streamlit Secrets (encrypted at rest)
+- Password is never committed to GitHub
+- Password is transmitted over HTTPS only
+- Sessions are browser-specific (each user must login)
+- No password recovery - if forgotten, update in Streamlit Secrets
+
+### Sharing Access
+
+To share the app with your team:
+
+1. Share the app URL: `https://route-buncher.streamlit.app`
+2. Share the password: `spaceCowboy` (or your custom password)
+3. Instruct them to enter the password when prompted
+
+**Important**: This is basic password protection. For production use with sensitive data, consider:
+- Using Streamlit's built-in authentication (requires paid plan)
+- Deploying to a private network
+- Implementing OAuth/SSO integration
 
 ## Updating Your Deployed App
 

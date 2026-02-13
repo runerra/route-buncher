@@ -106,3 +106,16 @@ def get_anthropic_api_key() -> str:
         This is optional - chat assistant won't work without it
     """
     return get_secret("ANTHROPIC_API_KEY", "")
+
+
+def get_app_password() -> str:
+    """
+    Retrieve the app password from Streamlit secrets or environment variables.
+
+    Returns:
+        str: App password for authentication
+
+    Note:
+        If not set, defaults to "spaceCowboy"
+    """
+    return get_secret("APP_PASSWORD", "spaceCowboy")

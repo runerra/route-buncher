@@ -521,9 +521,55 @@ def display_optimization_results(keep, early, reschedule, cancel, kept, service_
         st.info("All orders are being kept or delivered early")
 
 
+def check_password() -> bool:
+    """
+    Password protection for the app.
+
+    Returns:
+        bool: True if user is authenticated, False otherwise
+    """
+    # Initialize authentication state
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+
+    # If already authenticated, return True
+    if st.session_state.authenticated:
+        return True
+
+    # Get the correct password from config
+    correct_password = config.get_app_password()
+
+    # Show login form
+    st.title("🔒 The Buncher - Login")
+    st.markdown("Please enter the password to access the route optimizer.")
+
+    # Create a form for password entry
+    with st.form("login_form"):
+        password = st.text_input("Password", type="password", key="password_input")
+        submit = st.form_submit_button("Login", type="primary", use_container_width=True)
+
+        if submit:
+            if password == correct_password:
+                st.session_state.authenticated = True
+                st.success("✅ Login successful! Redirecting...")
+                st.rerun()
+            else:
+                st.error("❌ Incorrect password. Please try again.")
+                return False
+
+    # Show help text
+    st.info("💡 Contact your administrator if you need access.")
+
+    return False
+
+
 def main():
     """Main Streamlit app."""
     st.set_page_config(page_title="The Buncher", page_icon="🚐", layout="wide")
+
+    # Check password before showing app
+    if not check_password():
+        st.stop()
 
     # Initialize session state for manual orders
     if "manual_orders" not in st.session_state:
