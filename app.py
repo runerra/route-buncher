@@ -580,6 +580,24 @@ def main():
         help="Upload CSV with order data"
     )
 
+    # Sample file button
+    if st.sidebar.button("📋 Load Sample File", use_container_width=True, help="Load the included sample orders CSV"):
+        import os
+        sample_path = "sample_orders.csv"
+        if os.path.exists(sample_path):
+            # Read the sample file and store it in session state
+            with open(sample_path, 'rb') as f:
+                st.session_state.sample_file_content = f.read()
+            st.session_state.use_sample_file = True
+            st.success("✅ Sample file loaded! Click Run to optimize.")
+        else:
+            st.error("❌ Sample file not found")
+
+    # Use sample file if button was clicked
+    if st.session_state.get('use_sample_file', False) and uploaded_file is None:
+        from io import BytesIO
+        uploaded_file = BytesIO(st.session_state.sample_file_content)
+        uploaded_file.name = "sample_orders.csv"
 
     # Run buttons
     col1, col2 = st.sidebar.columns(2)
@@ -1358,19 +1376,51 @@ def main():
 
                     opt = optimizations['sandbox']
 
-                    # Show current metrics (with safety checks)
+                    # Show current metrics (with safety checks) - matching other cuts
+                    st.subheader("📊 Summary")
                     try:
+                        total_units = opt.get('total_units', 0)
+                        load_factor = opt.get('load_factor', 0)
+                        drive_time = opt.get('drive_time', 0)
+                        service_time = opt.get('service_time', 0)
                         total_time = opt.get('total_time', 0)
+                        route_miles = opt.get('route_miles', 0)
                         orders_kept = opt.get('orders_kept', 0)
                         deliveries_per_hour = (orders_kept / (total_time / 60)) if total_time > 0 else 0
 
-                        metric_col1, metric_col2, metric_col3 = st.columns(3)
-                        with metric_col1:
-                            st.metric("Load Factor", f"{opt.get('load_factor', 0):.1f}%")
-                        with metric_col2:
-                            st.metric("Route Miles", f"{opt.get('route_miles', 0):.1f}")
-                        with metric_col3:
+                        # Calculate dead leg (return time from last stop to fulfillment)
+                        dead_leg_time = 0
+                        if opt.get('kept') and len(opt['kept']) > 0:
+                            try:
+                                last_node = int(opt['kept'][-1]['node'])
+                                dead_leg_time = int(time_matrix[last_node][0])
+                            except (ValueError, TypeError, KeyError, IndexError):
+                                dead_leg_time = 0
+
+                        # First row of KPIs
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("KEEP Orders", orders_kept)
+                        with col2:
+                            capacity_pct = load_factor
+                            st.metric("Capacity Used", f"{total_units}/{vehicle_capacity}", f"{capacity_pct:.1f}%")
+                        with col3:
+                            st.metric("Total Route Time", format_time_minutes(total_time),
+                                     f"Drive: {format_time_minutes(drive_time)}, Service: {format_time_minutes(service_time)}")
+                        with col4:
+                            total_orders = orders_kept + len(opt.get('early', [])) + len(opt.get('reschedule', [])) + len(opt.get('cancel', []))
+                            st.metric("Total Orders", total_orders)
+
+                        # Second row of KPIs
+                        col5, col6, col7, col8 = st.columns(4)
+                        with col5:
+                            st.metric("Load Factor", f"{load_factor:.1f}%")
+                        with col6:
+                            st.metric("Route Miles", f"{route_miles:.1f}")
+                        with col7:
                             st.metric("Deliveries/Hour", f"{deliveries_per_hour:.1f}")
+                        with col8:
+                            st.metric("Dead Leg", f"{dead_leg_time} min", help="Time from last delivery back to fulfillment location")
                     except Exception as e:
                         st.error(f"Error displaying metrics: {e}")
 
@@ -1615,6 +1665,48 @@ def main():
                     except Exception as e:
                         st.warning(f"❌ Error creating map: {str(e)}")
                         st.info("💡 Try loading a different cut or re-running the optimization.")
+
+                    # Display route sequence table with service times
+                    st.markdown("---")
+                    keep_orders = opt.get('keep', [])
+                    if keep_orders:
+                        st.subheader("🗺️ Route Sequence")
+
+                        # Build route sequence string
+                        route_parts = ["Fulfillment Location"]
+                        for k in sorted(keep_orders, key=lambda x: x.get("sequence_index", 0)):
+                            route_parts.append(f"Order {k['order_id']}")
+                        route_parts.append("Fulfillment Location")
+                        st.write(" → ".join(route_parts))
+
+                        st.markdown("---")
+
+                        # Build detailed table
+                        route_table_data = []
+                        for k in sorted(keep_orders, key=lambda x: x.get("sequence_index", 0)):
+                            try:
+                                node = int(k.get('node', 0))
+                                service_time = int(service_times[node]) if service_times and node < len(service_times) else 0
+
+                                row = {
+                                    "Seq": int(k.get("sequence_index", 0)) + 1,
+                                    "Order ID": str(k.get("order_id", "")),
+                                    "Customer": str(k.get("customer_name", "")),
+                                    "Address": str(k.get("delivery_address", "")),
+                                    "Units": int(k.get("units", 0)),
+                                    "Est. Service Time": f"{service_time} min"
+                                }
+                                route_table_data.append(row)
+                            except (ValueError, TypeError, KeyError, IndexError):
+                                continue
+
+                        if route_table_data:
+                            route_df = pd.DataFrame(route_table_data)
+                            st.dataframe(route_df, use_container_width=True)
+                        else:
+                            st.info("No route data available")
+                    else:
+                        st.info("No orders in route. Load a cut or add orders to KEEP status.")
 
         except Exception as e:
             st.error(f"❌ Error processing file: {e}")
