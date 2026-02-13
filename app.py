@@ -741,12 +741,116 @@ def main():
         # Process pending AI response if waiting
         if st.session_state.waiting_for_ai_response:
             api_key = config.get_anthropic_api_key()
+
+            # Get sandbox data and other parameters for tool calling
+            results = st.session_state.optimization_results
+            if results:
+                sandbox_data = results['optimizations'].get('sandbox', {})
+                valid_orders = results.get('valid_orders', [])
+                time_matrix = results.get('time_matrix', [])
+                vehicle_capacity = results.get('vehicle_capacity', 80)
+                window_minutes = results.get('window_minutes', 120)
+                service_times = results.get('service_times', [])
+            else:
+                sandbox_data = None
+                valid_orders = None
+                time_matrix = None
+                vehicle_capacity = None
+                window_minutes = None
+                service_times = None
+
             with st.spinner("AI is thinking..."):
-                response = chat_assistant.chat_with_assistant(
+                response, updated_sandbox, tool_executions = chat_assistant.chat_with_assistant(
                     st.session_state.chat_messages,
                     st.session_state.optimization_context,
-                    api_key
+                    api_key,
+                    sandbox_data=sandbox_data,
+                    valid_orders=valid_orders,
+                    time_matrix=time_matrix,
+                    vehicle_capacity=vehicle_capacity,
+                    window_minutes=window_minutes,
+                    service_times=service_times
                 )
+
+            # If sandbox was updated, save it and recalculate metrics
+            if updated_sandbox is not None and results:
+                # Recalculate metrics for updated sandbox
+                def calc_route_metrics(kept_orders, kept_nodes_data, service_times, time_matrix, vehicle_capacity):
+                    total_units = sum(int(o["units"]) for o in kept_orders)
+                    load_factor = (total_units / vehicle_capacity * 100) if vehicle_capacity > 0 else 0
+
+                    drive_time = 0
+                    if kept_nodes_data and len(kept_nodes_data) > 0:
+                        try:
+                            first_node = int(kept_nodes_data[0]["node"])
+                            drive_time += int(time_matrix[0][first_node])
+                            for i in range(len(kept_nodes_data) - 1):
+                                from_node = int(kept_nodes_data[i]["node"])
+                                to_node = int(kept_nodes_data[i + 1]["node"])
+                                drive_time += int(time_matrix[from_node][to_node])
+                            last_node = int(kept_nodes_data[-1]["node"])
+                            drive_time += int(time_matrix[last_node][0])
+                        except (TypeError, ValueError, IndexError):
+                            drive_time = 0
+
+                    service_time = 0
+                    for o in kept_nodes_data:
+                        node = int(o["node"])
+                        if node < len(service_times):
+                            service_time += int(service_times[node])
+
+                    total_time = drive_time + service_time
+                    route_miles = total_time * 0.5
+                    units_per_mile = total_units / route_miles if route_miles > 0 else 0
+                    stops_per_mile = len(kept_orders) / route_miles if route_miles > 0 else 0
+
+                    return {
+                        'total_units': int(total_units),
+                        'load_factor': float(load_factor),
+                        'drive_time': int(drive_time),
+                        'service_time': int(service_time),
+                        'total_time': int(total_time),
+                        'route_miles': float(route_miles),
+                        'units_per_mile': float(units_per_mile),
+                        'stops_per_mile': float(stops_per_mile)
+                    }
+
+                # Build kept nodes for metrics
+                kept_nodes = []
+                for order in updated_sandbox.get('keep', []):
+                    kept_nodes.append({
+                        'node': order['node'],
+                        'sequence_index': order['sequence_index'],
+                        'arrival_min': 0
+                    })
+
+                new_metrics = calc_route_metrics(
+                    updated_sandbox.get('keep', []),
+                    kept_nodes,
+                    service_times,
+                    time_matrix,
+                    vehicle_capacity
+                )
+
+                # Update sandbox in session state
+                st.session_state.optimization_results['optimizations']['sandbox'] = {
+                    **updated_sandbox,
+                    'cut_type': 'sandbox',
+                    'strategy': 'Dispatcher Sandbox (AI-modified)',
+                    'kept': kept_nodes,
+                    'orders_kept': len(updated_sandbox.get('keep', [])),
+                    **new_metrics
+                }
+
+                # Switch to Dispatcher Sandbox tab to show changes
+                st.session_state.active_tab = 3
+
+            # Add tool execution messages if any
+            if tool_executions:
+                for tool_msg in tool_executions:
+                    st.session_state.chat_messages.append({"role": "assistant", "content": tool_msg})
+
+            # Add AI response
             st.session_state.chat_messages.append({"role": "assistant", "content": response})
             st.session_state.waiting_for_ai_response = False
             st.rerun()
