@@ -1298,6 +1298,10 @@ def main():
                 window_minutes = results['window_minutes']
                 service_times = results.get('service_times', [])
 
+                # Initialize active tab in session state (defaults to Cut 1)
+                if "active_tab" not in st.session_state:
+                    st.session_state.active_tab = 0
+
                 # Show 2-cut comparison summary
                 # Create tabs for four optimization cuts with order counts in titles
                 max_orders_count = optimizations['max_orders']['orders_kept']
@@ -1305,15 +1309,29 @@ def main():
                 density_orders_count = optimizations['high_density']['orders_kept']
                 sandbox_orders_count = optimizations['sandbox']['orders_kept']
 
-                tab1, tab2, tab3, tab4 = st.tabs([
+                # Tab selector that persists in session state
+                tab_options = [
                     f"✅ Cut 1: Max Orders ({max_orders_count} Orders) - RECOMMENDED",
                     f"⚡ Cut 2: Shortest Route ({shortest_orders_count} Orders)",
                     f"🎯 Cut 3: High Density ({density_orders_count} Orders)",
                     f"✏️ Cut 4: Dispatcher Sandbox ({sandbox_orders_count} Orders)"
-                ])
+                ]
+
+                selected_tab = st.selectbox(
+                    "Select View:",
+                    options=tab_options,
+                    index=st.session_state.active_tab,
+                    key="tab_selector",
+                    label_visibility="collapsed"
+                )
+
+                # Update active tab in session state
+                st.session_state.active_tab = tab_options.index(selected_tab)
+
+                st.markdown("---")
 
                 # TAB 1: MAX ORDERS (RECOMMENDED - default view)
-                with tab1:
+                if st.session_state.active_tab == 0:
                     opt = optimizations['max_orders']
                     st.info(f"**Cut 1 - Max Orders on Time (RECOMMENDED)**: Maximizes number of orders delivered within constraints - **{opt['orders_kept']} orders, {opt['total_units']} units ({opt['load_factor']:.0f}%), {opt['route_miles']:.1f} miles, {opt['total_time']} min**")
 
@@ -1338,7 +1356,7 @@ def main():
                     )
 
                 # TAB 2: SHORTEST ROUTE THAT FILLS VAN
-                with tab2:
+                elif st.session_state.active_tab == 1:
                     opt = optimizations['shortest']
                     st.info(f"**Cut 2 - Shortest Route (Efficiency-Based)**: Selects most efficient orders (high units/distance) targeting 80-90% capacity - **{opt['orders_kept']} orders, {opt['total_units']} units ({opt['load_factor']:.0f}%), {opt['route_miles']:.1f} miles, {opt['total_time']} min**")
 
@@ -1361,7 +1379,7 @@ def main():
                     )
 
                 # TAB 3: HIGH DENSITY CLUSTER
-                with tab3:
+                elif st.session_state.active_tab == 2:
                     opt = optimizations['high_density']
                     st.info(f"**Cut 3 - High Density Cluster**: Selects tightly grouped orders to maximize density within cluster - **{opt['orders_kept']} orders, {opt['total_units']} units ({opt['load_factor']:.0f}%), {opt['route_miles']:.1f} miles, {opt['total_time']} min**")
 
@@ -1384,7 +1402,7 @@ def main():
                     )
 
                 # TAB 4: DISPATCHER SANDBOX (MANUAL EDITING)
-                with tab4:
+                elif st.session_state.active_tab == 3:
                     st.info("**Cut 4 - Dispatcher Sandbox**: Manually adjust orders, reorder stops, and move orders between categories. Map and KPIs update in real-time.")
 
                     # Selector to choose starting cut
@@ -1416,7 +1434,10 @@ def main():
                                 'orders_kept': source_opt['orders_kept'],
                                 **{k: v for k, v in source_opt.items() if k not in ['keep', 'early', 'reschedule', 'cancel', 'kept', 'cut_type', 'strategy', 'penalty', 'orders_kept']}
                             }
+                            # Stay on Dispatcher Sandbox tab
+                            st.session_state.active_tab = 3
                             st.success(f"✅ Loaded {starting_cut} into Sandbox! Scroll down to see updated map and make edits.")
+                            st.rerun()
 
                     st.markdown("---")
 
@@ -1667,7 +1688,10 @@ def main():
                             **new_metrics
                         }
 
+                        # Stay on Dispatcher Sandbox tab
+                        st.session_state.active_tab = 3
                         st.success(f"✅ Recalculated! Route now has {len(new_keep)} orders. Scroll down to see updated map.")
+                        st.rerun()
 
                     st.markdown("---")
 
