@@ -2485,11 +2485,13 @@ def main():
                                 st.info("No orders in route. Load a cut or add orders to KEEP status.")
 
                 elif mode == "Full day":
+                    st.success("🔴 CHECKPOINT A: Full day mode started")
                     # FULL DAY MODE: Allocate orders across windows, then optimize each window
                     st.markdown("## 🌅 Full Day Optimization")
 
                     # Import allocator
                     from allocator import allocate_orders_across_windows, window_label
+                    st.success("🔴 CHECKPOINT B: After imports")
 
                     # Use updated window times if available (from editable table)
                     if 'updated_window_times' in st.session_state:
@@ -2534,6 +2536,7 @@ def main():
                         st.metric("Cancel recommended", len(allocation_result.cancel))
 
                     st.markdown("---")
+                    st.success("🔴 CHECKPOINT C: After allocation summary, starting per-window loop")
 
                     # Now optimize each window separately
                     st.markdown("### 🚛 Per-Window Optimization Results")
@@ -2543,6 +2546,8 @@ def main():
                     for i, (win_start, win_end) in enumerate(allocation_windows):
                         win_label = window_labels_list[i]
                         win_orders = allocation_result.orders_by_window.get(win_label, [])
+
+                        st.success(f"🔴 LOOP ITERATION {i+1}: Processing {win_label} with {len(win_orders)} orders")
 
                         if not win_orders:
                             with st.expander(f"**{win_label}** — No orders assigned", expanded=False):
@@ -2606,6 +2611,8 @@ def main():
                                 'geocoded': win_geocoded,  # Store for global map
                                 'addresses': win_addresses  # Store for reference
                             }
+
+                            st.success(f"🟣 Window {win_label} optimization completed, displaying results...")
 
                             # Display results
                             st.markdown(f"**Route Summary**: {len(keep)} orders, {sum(o['units'] for o in keep)} units")
@@ -2680,6 +2687,26 @@ def main():
                                 st.dataframe(cancel_df, use_container_width=True)
 
                     st.markdown("---")
+                    st.success("🔴 CHECKPOINT D: Per-window loop completed, about to render map")
+
+                    # 🔥 CRITICAL: Store to session state IMMEDIATELY after loop completes
+                    # This prevents data loss if a rerun happens during display
+                    st.success("🔥 STORING TO SESSION STATE NOW (before any more display)")
+                    try:
+                        st.session_state.full_day_results = {
+                            'window_results': window_results,
+                            'allocation_result': allocation_result,
+                            'window_labels_list': window_labels_list,
+                            'window_capacities': window_capacities,
+                            'allocation_windows': allocation_windows,
+                            'depot_address': depot_address,
+                            'mode': 'Full day',
+                            'ai_validation': None,  # Will update later if AI runs
+                            'use_ai': st.session_state.get('use_ai', False)
+                        }
+                        st.success("✅ SESSION STATE SAVED EARLY!")
+                    except Exception as store_error:
+                        st.error(f"❌ EARLY STORAGE FAILED: {store_error}")
 
                     # Global Summary Map
                     st.markdown("### 🗺️ Global Route Summary Map")
@@ -2844,6 +2871,7 @@ def main():
                     st.success("✅ Map section completed")
 
                     st.markdown("---")
+                    st.success("🟢 CHECKPOINT 1: After map, before allocation details")
 
                     # Show global allocation tables
                     st.markdown("### 📊 Global Allocation Details")
@@ -2908,6 +2936,8 @@ def main():
                             cancel_df = pd.DataFrame(cancel_data)
                             st.dataframe(cancel_df, use_container_width=True)
 
+                    st.success("🟢 CHECKPOINT 2: After allocation details, before AI validation")
+
                     # AI VALIDATION FOR FULL DAY MODE
                     st.markdown("---")
                     st.markdown("### 🤖 AI Validation & Analysis")
@@ -2916,7 +2946,14 @@ def main():
                     anthropic_key = config.get_anthropic_api_key()
                     ai_available = anthropic_key and anthropic_key != "YOUR_ANTHROPIC_API_KEY_HERE"
 
-                    if ai_available and run_with_ai:
+                    # Initialize validation result
+                    validation_result = None
+
+                    # Use stored AI preference from session state (not button state, which resets after rerun)
+                    should_use_ai = st.session_state.get('use_ai', False)
+                    st.info(f"🔍 Debug: ai_available={ai_available}, should_use_ai={should_use_ai}, run_with_ai={run_with_ai}")
+
+                    if ai_available and should_use_ai:
                         with st.spinner("🤖 AI analyzing full day allocation and routes..."):
                             try:
                                 # Build comprehensive summary for AI
@@ -3001,13 +3038,325 @@ Be concise but thorough. Focus on actionable insights."""
 
                                 validation_result = call_claude_api(ai_prompt)
 
+                                st.success(f"✅ AI VALIDATION COMPLETED! Result length: {len(validation_result) if validation_result else 0} chars")
                                 st.markdown("#### 🤖 AI Analysis")
                                 st.markdown(validation_result)
 
                             except Exception as ai_error:
-                                st.warning(f"⚠️ AI validation skipped: {ai_error}")
+                                st.error(f"❌ AI validation error: {ai_error}")
+                                import traceback
+                                st.code(traceback.format_exc())
                     else:
                         st.info("💡 Enable AI (via ANTHROPIC_API_KEY in .env) to get intelligent validation of full day allocation")
+
+                    st.success("🟢 CHECKPOINT 3: After AI section, updating session state with AI result")
+
+                    # Update session state with AI validation result
+                    # (Full data was already stored early, we're just adding the AI result now)
+                    try:
+                        if 'full_day_results' in st.session_state and st.session_state.full_day_results:
+                            st.session_state.full_day_results['ai_validation'] = validation_result
+                            result_preview = validation_result[:100] if validation_result else "None"
+                            st.success(f"✅ AI VALIDATION ADDED TO SESSION STATE! Preview: {result_preview}...")
+                        else:
+                            st.warning("⚠️ Session state not found - AI result not saved")
+                    except Exception as update_error:
+                        st.error(f"❌ ERROR UPDATING AI IN SESSION STATE: {update_error}")
+
+            # Debug: Check conditions for cached display
+            if not run_optimization:
+                st.sidebar.markdown("---")
+                st.sidebar.markdown("**🔍 Debug Info:**")
+                st.sidebar.write(f"• valid_orders: {len(valid_orders) if valid_orders else 0} orders")
+                st.sidebar.write(f"• run_optimization: {run_optimization}")
+                st.sidebar.write(f"• mode: {mode}")
+                st.sidebar.write(f"• full_day_results in session: {'full_day_results' in st.session_state}")
+                if 'full_day_results' in st.session_state:
+                    st.sidebar.write(f"• full_day_results is not None: {st.session_state.full_day_results is not None}")
+
+            # Display stored Full day results (when not running optimization but results exist in session state)
+            if valid_orders and not run_optimization and mode == "Full day" and 'full_day_results' in st.session_state and st.session_state.full_day_results:
+                try:
+                    st.success("🎯 CACHED DISPLAY STARTED")
+                    st.info("📦 Displaying cached Full Day optimization results")
+                    st.markdown("## 🌅 Full Day Optimization")
+
+                    # Extract stored results
+                    stored = st.session_state.full_day_results
+                    st.write(f"Debug: stored keys = {stored.keys() if isinstance(stored, dict) else 'NOT A DICT'}")
+                except Exception as cache_error:
+                    st.error(f"❌ Error in cached display: {cache_error}")
+                    import traceback
+                    st.code(traceback.format_exc())
+                window_results = stored['window_results']
+                allocation_result = stored['allocation_result']
+                window_labels_list = stored['window_labels_list']
+                window_capacities = stored['window_capacities']
+                allocation_windows = stored['allocation_windows']
+                depot_address = stored['depot_address']
+                validation_result = stored.get('ai_validation')
+
+                # Show global allocation summary
+                st.markdown("### 📈 Allocation Summary")
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Kept in window", len(allocation_result.kept_in_window))
+                with col2:
+                    st.metric("Moved early", len(allocation_result.moved_early))
+                with col3:
+                    st.metric("Reschedule", len(allocation_result.reschedule))
+                with col4:
+                    st.metric("Cancel recommended", len(allocation_result.cancel))
+
+                st.markdown("---")
+
+                # Show per-window results
+                st.markdown("### 🚛 Per-Window Optimization Results")
+
+                for i, (win_start, win_end) in enumerate(allocation_windows):
+                    win_label = window_labels_list[i]
+                    result = window_results.get(win_label)
+
+                    if not result:
+                        with st.expander(f"**{win_label}** — No orders assigned", expanded=False):
+                            st.info("No orders were assigned to this window after allocation.")
+                        continue
+
+                    with st.expander(f"**{win_label}** — {result['orders_kept']} orders", expanded=True):
+                        from allocator import window_duration_minutes
+                        win_duration = window_duration_minutes(win_start, win_end)
+
+                        st.markdown(f"**Route Summary**: {result['orders_kept']} orders, {result['total_units']} units")
+
+                        # Show KEEP orders
+                        if result['keep']:
+                            st.markdown("#### ✅ KEEP (On Route)")
+                            keep_data = []
+                            for k in sorted(result['keep'], key=lambda x: x.get("sequence_index", 0)):
+                                row = {
+                                    "Seq": k.get("sequence_index", 0) + 1,
+                                    "externalOrderId": k.get("order_id", "N/A"),
+                                    "customerID": k.get("customer_name", "N/A"),
+                                    "address": k.get("delivery_address", "N/A"),
+                                    "numberOfUnits": k.get("units", 0)
+                                }
+                                keep_data.append(row)
+                            keep_df = pd.DataFrame(keep_data)
+                            st.dataframe(keep_df, width="stretch")
+
+                        # Show other categories if they exist
+                        for category, label, emoji in [
+                            ('early', 'EARLY DELIVERY', '⏰'),
+                            ('reschedule', 'RESCHEDULE', '📅'),
+                            ('cancel', 'CANCEL', '❌')
+                        ]:
+                            if result.get(category):
+                                st.markdown(f"#### {emoji} {label}")
+                                data = []
+                                for item in result[category]:
+                                    row = {
+                                        "externalOrderId": item.get("order_id", "N/A"),
+                                        "customerID": item.get("customer_name", "N/A"),
+                                        "address": item.get("delivery_address", "N/A"),
+                                        "numberOfUnits": item.get("units", 0)
+                                    }
+                                    data.append(row)
+                                df = pd.DataFrame(data)
+                                st.dataframe(df, width="stretch")
+
+                st.markdown("---")
+
+                # Show global allocation tables
+                st.markdown("### 📊 Global Allocation Details")
+
+                # Orders moved early
+                if allocation_result.moved_early:
+                    with st.expander("🟢 Orders Moved Early", expanded=True):
+                        moved_data = []
+                        for a in allocation_result.moved_early:
+                            row = {
+                                "externalOrderId": a.order["order_id"],
+                                "customerID": a.order["customer_name"],
+                                "address": a.order["delivery_address"],
+                                "numberOfUnits": a.order["units"],
+                                "From Window": a.original_window,
+                                "To Window": a.assigned_window,
+                                "Reason": a.reason
+                            }
+                            moved_data.append(row)
+                        moved_df = pd.DataFrame(moved_data)
+                        st.dataframe(moved_df, width="stretch")
+
+                # Orders recommended for reschedule
+                if allocation_result.reschedule:
+                    with st.expander("🟡 Orders Recommended for Reschedule", expanded=True):
+                        resc_data = []
+                        for a in allocation_result.reschedule:
+                            row = {
+                                "externalOrderId": a.order["order_id"],
+                                "customerID": a.order["customer_name"],
+                                "address": a.order["delivery_address"],
+                                "numberOfUnits": a.order["units"],
+                                "Original Window": a.original_window,
+                                "Reschedule Count": a.order.get("priorRescheduleCount", 0) or 0,
+                                "Reason": a.reason
+                            }
+                            resc_data.append(row)
+                        resc_df = pd.DataFrame(resc_data)
+                        st.dataframe(resc_df, width="stretch")
+
+                # Orders recommended for cancel
+                if allocation_result.cancel:
+                    with st.expander("🔴 Orders Recommended for Cancel", expanded=True):
+                        cancel_data = []
+                        for a in allocation_result.cancel:
+                            row = {
+                                "externalOrderId": a.order["order_id"],
+                                "customerID": a.order["customer_name"],
+                                "address": a.order["delivery_address"],
+                                "numberOfUnits": a.order["units"],
+                                "Original Window": a.original_window,
+                                "Reschedule Count": a.order.get("priorRescheduleCount", 0) or 0,
+                                "Reason": a.reason
+                            }
+                            cancel_data.append(row)
+                        cancel_df = pd.DataFrame(cancel_data)
+                        st.dataframe(cancel_df, width="stretch")
+
+                st.markdown("---")
+
+                # Global Summary Map
+                st.markdown("### 🗺️ Global Route Summary Map")
+                st.markdown("All routes displayed together with color-coded windows")
+
+                try:
+                    import folium
+
+                    if not window_results:
+                        st.warning("No routes to display on map")
+                    else:
+                        first_window = list(window_results.values())[0]
+                        depot_geo = first_window.get('geocoded', [{}])[0] if first_window.get('geocoded') else {}
+
+                        if depot_geo.get("lat") is not None:
+                            # Define distinct colors for each window
+                            route_colors = ['#FF0000', '#0000FF', '#00FF00', '#FF00FF', '#FFA500', '#800080', '#00FFFF', '#FFD700']
+
+                            # Calculate map center from all routes
+                            all_lats = [depot_geo["lat"]]
+                            all_lons = [depot_geo["lng"]]
+
+                            for win_label, result in window_results.items():
+                                win_geocoded = result.get('geocoded', [])
+                                for order in result['keep']:
+                                    if 'node' in order:
+                                        node_idx = order['node']
+                                        if 0 <= node_idx < len(win_geocoded):
+                                            geo = win_geocoded[node_idx]
+                                            if geo.get("lat") is not None:
+                                                all_lats.append(geo["lat"])
+                                                all_lons.append(geo["lng"])
+
+                            if len(all_lats) > 1:
+                                center_lat = sum(all_lats) / len(all_lats)
+                                center_lon = sum(all_lons) / len(all_lons)
+
+                                # Create map
+                                global_map = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles='OpenStreetMap')
+
+                                # Add depot marker
+                                folium.Marker(
+                                    location=[depot_geo["lat"], depot_geo["lng"]],
+                                    popup=f"<b>Depot</b><br>{depot_address}",
+                                    icon=folium.Icon(color='blue', icon='home', prefix='fa'),
+                                    tooltip="Fulfillment Location"
+                                ).add_to(global_map)
+
+                                # Plot each window's route
+                                for idx, (win_label, result) in enumerate(window_results.items()):
+                                    color = route_colors[idx % len(route_colors)]
+                                    keep_orders = result['keep']
+                                    win_geocoded_data = result.get('geocoded', [])
+
+                                    if keep_orders and win_geocoded_data:
+                                        sorted_orders = sorted(keep_orders, key=lambda x: x.get('sequence_index', 0))
+
+                                        # Add markers for each stop
+                                        for i, order in enumerate(sorted_orders):
+                                            if 'node' in order:
+                                                node_idx = order['node']
+                                                if 0 <= node_idx < len(win_geocoded_data):
+                                                    geo = win_geocoded_data[node_idx]
+                                                    if geo.get("lat") is not None:
+                                                        popup_html = f"""
+                                                        <b>Window: {win_label}</b><br>
+                                                        Stop #{i+1}<br>
+                                                        Order: {order.get('order_id', 'N/A')}<br>
+                                                        Customer: {order.get('customer_name', 'N/A')}<br>
+                                                        Units: {order.get('units', 'N/A')}
+                                                        """
+                                                        folium.CircleMarker(
+                                                            location=[geo["lat"], geo["lng"]],
+                                                            radius=8,
+                                                            popup=folium.Popup(popup_html, max_width=300),
+                                                            color=color,
+                                                            fill=True,
+                                                            fillColor=color,
+                                                            fillOpacity=0.7,
+                                                            weight=2,
+                                                            tooltip=f"{win_label}: Stop {i+1}"
+                                                        ).add_to(global_map)
+
+                                        # Draw route lines
+                                        route_coords = [[depot_geo["lat"], depot_geo["lng"]]]
+                                        for order in sorted_orders:
+                                            if 'node' in order:
+                                                node_idx = order['node']
+                                                if 0 <= node_idx < len(win_geocoded_data):
+                                                    geo = win_geocoded_data[node_idx]
+                                                    if geo.get("lat") is not None:
+                                                        route_coords.append([geo["lat"], geo["lng"]])
+                                        route_coords.append([depot_geo["lat"], depot_geo["lng"]])
+
+                                        folium.PolyLine(
+                                            locations=route_coords,
+                                            color=color,
+                                            weight=3,
+                                            opacity=0.7,
+                                            popup=f"Route: {win_label}",
+                                            tooltip=f"{win_label} - {len(sorted_orders)} stops"
+                                        ).add_to(global_map)
+
+                                # Add legend
+                                legend_html = '<div style="position: fixed; bottom: 50px; left: 50px; z-index: 1000; background-color: white; padding: 10px; border: 2px solid grey; border-radius: 5px;">'
+                                legend_html += '<h4 style="margin: 0 0 10px 0;">Routes by Window</h4>'
+                                for idx, win_label in enumerate(window_results.keys()):
+                                    color = route_colors[idx % len(route_colors)]
+                                    legend_html += f'<p style="margin: 5px;"><span style="background-color: {color}; width: 20px; height: 10px; display: inline-block; margin-right: 5px;"></span>{win_label}</p>'
+                                legend_html += '</div>'
+                                global_map.get_root().html.add_child(folium.Element(legend_html))
+
+                                # Display map
+                                st_folium(global_map, width=None, height=600)
+                                st.caption("🎨 Each color represents a different delivery window route")
+                        else:
+                            st.warning("⚠️ Depot location not available for map")
+                except Exception as map_error:
+                    st.error(f"❌ Error creating map: {str(map_error)}")
+
+                st.markdown("---")
+
+                # Show AI validation if it was generated
+                st.markdown("### 🤖 AI Validation & Analysis")
+                if validation_result:
+                    st.markdown("#### 🤖 AI Analysis")
+                    st.markdown(validation_result)
+                else:
+                    st.info("💡 AI validation not available. This may be because:")
+                    st.write("- Optimization was run without AI (used ⚡ Run button)")
+                    st.write("- ANTHROPIC_API_KEY not configured in .env file")
+                    st.write("- AI analysis encountered an error during optimization")
+                    st.sidebar.write(f"**Debug:** validation_result type: {type(validation_result)}, value: {validation_result}")
 
         except Exception as e:
             st.error(f"❌ Error processing file: {e}")

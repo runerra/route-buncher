@@ -732,3 +732,38 @@ Format: ORDER_ID|explanation (one per line, no extra text)
     except Exception as e:
         print(f"Error generating order explanations: {e}")
         return None
+
+
+def call_claude_api(prompt: str, api_key: str = None) -> str:
+    """
+    Simple helper function to call Claude API with a single prompt.
+    Used for validation and analysis tasks.
+
+    Args:
+        prompt: The prompt to send to Claude
+        api_key: Anthropic API key (optional, will use config if not provided)
+
+    Returns:
+        Claude's response text
+    """
+    if api_key is None:
+        api_key = config.get_anthropic_api_key()
+
+    if not api_key or api_key == "YOUR_ANTHROPIC_API_KEY_HERE":
+        return "⚠️ AI assistant is not configured. Please add your ANTHROPIC_API_KEY to the .env file."
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+
+        response = client.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=2000,
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+
+        return response.content[0].text
+
+    except Exception as e:
+        return f"⚠️ Error calling Claude API: {str(e)}"

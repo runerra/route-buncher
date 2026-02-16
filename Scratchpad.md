@@ -1,20 +1,14 @@
 Scratchpad
 
+allocation summary should only show if the allocation has not happened fully yet, make sure this shows up at the very end
 
-
-
-
-
-allocation summary should only show if the allocation has not happened fully yet, make sure this shows up at the very 
-
-make all order status on by default in configuration
 
 UX Fixes
 - How can we simplify the UX 
 -  Remove choice between full day and single window and just automate this, if an user uploads a csv, let them select which windows to optimize, default should be all selected and they can deselect multiple winodows if they want.
-
-the configuration side bar doesn't make a ton of sense now with there being a ton of congif in the main dashboard now
-
+- the configuration side bar doesn't make a ton of sense now with there being a ton of congif in the main dashboard now
+- generate a global summary map with stops linked together for each route/window, each route/window is a different color, the routes should be accurate based of the routes traveled by the van
+- Mapbox API 
 
 
 
@@ -44,3 +38,5 @@ make utilization bar green if there is enough capacity and red if it is over cap
 generate a global summary map with stops linked together for each route/window, each route/window is a different color, the routes should be accurate
 
 The map is not visible, nothing populates and the application automatically refreshes for some reason
+
+make all order status on by default in configuration
