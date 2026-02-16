@@ -84,23 +84,89 @@ After optimization, you can ask Claude questions about the route:
 
 ### Running Optimization
 
-You have two buttons:
+The app now has a simplified interface with **one button** and a **test mode toggle**:
 
-**🚀 Run (with AI)** - Full AI features:
+**🚀 Run Optimization** - Single button for all optimizations:
+- AI features enabled **by default** when API key is configured
 - Route validation and explanation
 - AI-generated order disposition reasons
 - Interactive chat assistant enabled
-- Takes ~5-10 seconds longer
-- Costs ~$0.01-0.05 per optimization
+- Takes ~5-10 seconds with AI, ~2-5 seconds without
+- Costs ~$0.01-0.05 per optimization (when AI enabled)
 
-**⚡ Run (no AI)** - Fast optimization:
-- Same routing logic and results
-- Generic disposition reasons
-- No chat assistant
-- Completes in ~2-5 seconds
-- Free (only uses Google Maps API)
+**🧪 Test Mode Toggle** - Cost-free development mode:
+- **Enable this checkbox** to skip both Maps API and AI API
+- Uses mock geocoding (estimated straight-line distances)
+- Uses generic AI responses (no API calls)
+- Zero API costs - perfect for testing and debugging
+- All features work, just with simulated data
 
-**Recommendation**: Use "Run (no AI)" during testing/debugging, then "Run (with AI)" for final routes you'll share with drivers.
+**Status Indicators**:
+- ✅ **Green "AI Features Enabled"**: API key configured, AI active
+- ℹ️ **Blue "AI Disabled (No API Key)"**: No API key, optimization still works
+- ⚠️ **Orange "Test Mode Active"**: Using mock data, zero API costs
+
+**Recommendation**:
+- Use **Test Mode ON** during development, testing, and debugging
+- Use **Test Mode OFF** for final routes with real geocoding and AI analysis
+
+---
+
+## Test Mode: Cost-Free Development
+
+Test Mode is a powerful feature that allows you to develop and test routes without incurring any API costs.
+
+### What Test Mode Does
+
+When **🧪 Test Mode** is enabled:
+
+1. **Skips Google Maps API**:
+   - Uses mock geocoding with estimated straight-line distances
+   - No geocoding API calls = $0 cost
+   - Perfect for testing CSV parsing, UI, and routing logic
+
+2. **Skips Anthropic AI API**:
+   - Uses generic template responses instead of AI analysis
+   - No Claude API calls = $0 cost
+   - All AI features work, just with simulated responses
+
+3. **Maintains Full Functionality**:
+   - Routing algorithm works identically
+   - All UI features available
+   - Maps render (with mock data)
+   - Order disposition works
+   - Optimization completes successfully
+
+### When to Use Test Mode
+
+✅ **Use Test Mode When**:
+- Developing new features
+- Testing CSV file formats
+- Debugging routing issues
+- Training new team members
+- Rapid iteration during configuration
+- Running automated tests
+- You don't have API keys configured
+
+❌ **Disable Test Mode When**:
+- Creating production routes for drivers
+- Need accurate drive times and distances
+- Want detailed AI explanations
+- Presenting routes to management/customers
+
+### Cost Savings Example
+
+**Without Test Mode** (100 test runs during development):
+- Google Maps API: ~$2-5
+- Anthropic AI API: ~$3-7
+- **Total**: ~$5-12
+
+**With Test Mode** (100 test runs):
+- Google Maps API: $0
+- Anthropic AI API: $0
+- **Total**: **$0** 🎉
+
+Once development is complete, disable Test Mode for final validation with real data.
 
 ---
 
@@ -260,7 +326,7 @@ AI validation checks for:
 1. Re-run the optimization
 2. Verify order data in CSV is correct
 3. Check that geocoding completed successfully
-4. If persistent, use "⚡ Run (no AI)" to isolate routing logic
+4. If persistent, enable **Test Mode** to isolate routing logic from API issues
 
 ### Chat Not Showing Up
 
@@ -268,7 +334,7 @@ AI validation checks for:
 
 **Cause**: AI was not enabled during optimization run
 
-**Solution**: Click **"🚀 Run (with AI)"** button instead of "⚡ Run (no AI)"
+**Solution**: Ensure **Test Mode is disabled** to enable AI features (requires API key)
 
 ---
 
@@ -304,7 +370,7 @@ When you use AI features, the following data is sent:
 1. **Protect API Keys**: Never commit .env to version control
 2. **Rotate Keys**: Generate new API keys every 3-6 months
 3. **Monitor Usage**: Check Anthropic console regularly for unexpected usage
-4. **Sensitive Data**: If orders contain PII, consider using "⚡ Run (no AI)"
+4. **Sensitive Data**: If orders contain PII, remove `ANTHROPIC_API_KEY` from .env to disable AI
 
 ---
 
@@ -388,19 +454,21 @@ model="claude-haiku-3-5-20241022"
 
 ---
 
-## Comparison: With AI vs Without AI
+## Comparison: Test Mode vs Live Mode
 
-| Feature | 🚀 With AI | ⚡ Without AI |
-|---------|-----------|--------------|
-| **Routing Logic** | Identical | Identical |
-| **Order Count** | Same | Same |
-| **Route Sequence** | Same | Same |
-| **Optimization Time** | 5-10 seconds | 2-5 seconds |
-| **Route Validation** | ✅ Detailed analysis | ❌ None |
-| **Order Reasons** | ✅ Specific, context-aware | ✅ Generic |
-| **Chat Assistant** | ✅ Full interactive Q&A | ❌ Not available |
-| **Cost** | ~$0.02-0.05 per run | Free (Google Maps only) |
-| **Best For** | Final routes, training, auditing | Testing, debugging, high-volume |
+| Feature | 🧪 Test Mode | 🚀 Live Mode (AI Enabled) | 🚀 Live Mode (No API Key) |
+|---------|-------------|------------------------|--------------------------|
+| **Routing Logic** | Identical | Identical | Identical |
+| **Order Count** | Same | Same | Same |
+| **Route Sequence** | Same | Same | Same |
+| **Geocoding** | Mock (straight-line estimates) | Real Google Maps API | Real Google Maps API |
+| **Maps** | Mock data visualization | Google Maps road routes | Google Maps road routes |
+| **Optimization Time** | ~2-5 seconds | ~5-10 seconds | ~3-7 seconds |
+| **Route Validation** | ✅ Generic template | ✅ Detailed AI analysis | ❌ None |
+| **Order Reasons** | ✅ Generic | ✅ Specific, context-aware | ✅ Generic |
+| **Chat Assistant** | ❌ Not available | ✅ Full interactive Q&A | ❌ Not available |
+| **API Costs** | **$0** (No API calls) | ~$0.03-0.07 per run | ~$0.01-0.02 per run |
+| **Best For** | Testing, debugging, development | Final routes, training, auditing | Production without AI features |
 
 ---
 
@@ -422,7 +490,7 @@ A: No. Each optimization is independent. AI doesn't retain memory between sessio
 A: Not currently. AI only analyzes optimization results, not input data validation.
 
 **Q: What if Anthropic API is down?**
-A: Use "⚡ Run (no AI)" button. Routing works normally, you just won't get AI explanations.
+A: AI features automatically disable if no API key is configured or if Test Mode is enabled. Routing works normally, you just won't get AI explanations.
 
 **Q: Can I use a different AI provider (OpenAI, etc.)?**
 A: Code currently only supports Anthropic. Contact maintainer if you need OpenAI integration.
@@ -458,7 +526,7 @@ A: Code currently only supports Anthropic. Contact maintainer if you need OpenAI
 
 ### Cost Optimization
 
-1. **Test Without AI First**: Use "⚡ Run (no AI)" for configuration testing
+1. **Test in Test Mode First**: Enable **🧪 Test Mode** checkbox for cost-free configuration testing
 2. **Use AI for Finals**: Enable AI for routes you'll actually deploy
 3. **Batch Questions**: Ask multiple related questions in sequence rather than re-optimizing
 4. **Monitor Usage**: Set up spending alerts in Anthropic console
@@ -497,6 +565,38 @@ Potential enhancements under consideration:
 
 ---
 
+## Recent Updates (v2.0 - February 2026)
+
+### UX Consolidation & Enhancements
+
+The app has been significantly improved with a unified, consistent user experience:
+
+**Simplified Controls**:
+- ✅ Single "🚀 Run Optimization" button (replaces dual AI buttons)
+- ✅ Test Mode toggle for cost-free development
+- ✅ Clear AI status indicators
+
+**Enhanced Maps**:
+- ✅ Multi-window now uses Google Maps polylines (actual road routes)
+- ✅ Numbered stop markers in all views
+- ✅ Consistent map quality between single and multi-window modes
+- ✅ Rich tooltips with window assignments
+
+**Multi-Window Improvements**:
+- ✅ Per-window KPI dashboards (orders, capacity, time, efficiency)
+- ✅ Individual window maps in expanders
+- ✅ AI validation per window (when enabled)
+- ✅ Color-coded global map with legend
+
+**Test Mode**:
+- ✅ Unified test mode that skips BOTH Maps API and AI API
+- ✅ Zero API costs during development
+- ✅ All features work with simulated data
+
+For detailed testing instructions, see `TESTING_UX_CONSOLIDATION.md`.
+
+---
+
 **Built with Claude AI by Anthropic**
 **Model**: Claude Sonnet 4.5 (February 2026)
-**Documentation Version**: 1.0
+**Documentation Version**: 2.0

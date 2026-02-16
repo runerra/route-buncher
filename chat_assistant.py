@@ -10,6 +10,73 @@ import config
 import json
 
 
+def generate_mock_validation(keep, early, reschedule, cancel, vehicle_capacity, window_minutes):
+    """
+    Generate template-based validation for test mode (no API call).
+
+    Args:
+        keep: List of orders kept in route
+        early: List of orders for early delivery
+        reschedule: List of orders to reschedule
+        cancel: List of orders to cancel
+        vehicle_capacity: Vehicle capacity in units
+        window_minutes: Delivery window in minutes
+
+    Returns:
+        str: Mock validation message
+    """
+    kept_units = sum(o.get('units', 0) for o in keep)
+    capacity_pct = (kept_units / vehicle_capacity * 100) if vehicle_capacity > 0 else 0
+
+    return f"""✅ Route validation (Test Mode - Mock Response):
+
+**Capacity Check:**
+- {len(keep)} orders kept ({kept_units}/{vehicle_capacity} units = {capacity_pct:.1f}%)
+- Capacity constraint satisfied
+
+**Order Disposition:**
+- {len(keep)} orders on route
+- {len(early)} orders for early delivery
+- {len(reschedule)} orders to reschedule
+- {len(cancel)} orders to cancel
+
+**Time Estimate:**
+- Estimated route time: {window_minutes} minutes (test mode uses simplified calculation)
+
+**Test Mode Notice:** This is a mock validation. Enable AI (disable test mode) for detailed route analysis."""
+
+
+def generate_mock_order_explanations(orders):
+    """
+    Generate generic explanations for test mode (no API call).
+
+    Args:
+        orders: List of orders needing explanations
+
+    Returns:
+        Dict mapping order_id to generic explanation
+    """
+    explanations = {}
+    for order in orders:
+        order_id = str(order.get('order_id', ''))
+        category = order.get('category', 'UNKNOWN').upper()
+
+        if category == 'KEEP':
+            explanation = "Test mode - Order kept in optimized route"
+        elif category == 'EARLY':
+            explanation = "Test mode - Order eligible for early delivery"
+        elif category == 'RESCHEDULE':
+            explanation = "Test mode - Order recommended for rescheduling"
+        elif category == 'CANCEL':
+            explanation = "Test mode - Order recommended for cancellation"
+        else:
+            explanation = "Test mode - Generic reason"
+
+        explanations[order_id] = explanation
+
+    return explanations
+
+
 def create_context_for_ai(keep, early, reschedule, cancel, valid_orders, time_matrix, vehicle_capacity, window_minutes, depot_address):
     """
     Create a comprehensive context string for the AI assistant.
@@ -287,6 +354,10 @@ def validate_optimization_results(keep, early, reschedule, cancel, valid_orders,
     Returns:
         str: AI validation and explanation
     """
+    # Check if AI is enabled (considers test mode and API key)
+    if not config.is_ai_enabled():
+        return generate_mock_validation(keep, early, reschedule, cancel, vehicle_capacity, window_minutes)
+
     if not api_key or api_key == "YOUR_ANTHROPIC_API_KEY_HERE":
         return None
 
@@ -641,6 +712,11 @@ def generate_order_explanations(keep, early, reschedule, cancel, time_matrix, de
     Returns:
         Dict mapping order_id to AI-generated explanation
     """
+    # Check if AI is enabled (considers test mode and API key)
+    if not config.is_ai_enabled():
+        all_orders = keep + early + reschedule + cancel
+        return generate_mock_order_explanations(all_orders)
+
     if not api_key or api_key == "YOUR_ANTHROPIC_API_KEY_HERE":
         # Return None if AI not configured - will use default reasons
         return None

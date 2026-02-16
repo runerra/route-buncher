@@ -381,3 +381,40 @@ def get_route_polylines(addresses: List[str], waypoint_order: List[int]) -> List
     except Exception as e:
         print(f"Error fetching directions: {e}")
         return []
+
+
+def get_multi_route_polylines(routes_data: Dict[str, Dict]) -> Dict[str, List[Tuple[float, float]]]:
+    """
+    Get actual driving route polylines for multiple routes simultaneously.
+
+    Args:
+        routes_data: Dict mapping route_id to route data
+                    {
+                        'route_1': {
+                            'addresses': [...],
+                            'waypoint_order': [0, 3, 1, 5, 0]
+                        },
+                        'route_2': {
+                            'addresses': [...],
+                            'waypoint_order': [0, 2, 4, 0]
+                        }
+                    }
+
+    Returns:
+        Dict mapping route_id to list of (lat, lng) tuples
+        {
+            'route_1': [(lat1, lng1), (lat2, lng2), ...],
+            'route_2': [(lat1, lng1), (lat2, lng2), ...]
+        }
+    """
+    result = {}
+
+    for route_id, route_data in routes_data.items():
+        addresses = route_data['addresses']
+        waypoint_order = route_data['waypoint_order']
+
+        # Get polylines for this route
+        polylines = get_route_polylines(addresses, waypoint_order)
+        result[route_id] = polylines
+
+    return result

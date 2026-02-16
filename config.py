@@ -180,3 +180,22 @@ def is_test_mode() -> bool:
     # Fall back to environment variable
     test_mode = get_secret("TEST_MODE", "true")
     return test_mode.lower() in ["true", "1", "yes", "on"]
+
+
+def is_ai_enabled() -> bool:
+    """
+    Check if AI features should be enabled.
+
+    AI features are disabled in test mode (to avoid API costs during development)
+    or when no Anthropic API key is configured.
+
+    Returns:
+        bool: True if AI should be enabled, False otherwise
+    """
+    # Disabled if in test mode (avoids API costs)
+    if is_test_mode():
+        return False
+
+    # Disabled if no API key configured
+    api_key = get_anthropic_api_key()
+    return bool(api_key)
