@@ -994,6 +994,33 @@ def main():
         st.session_state.show_random_sample_questions = True
         st.rerun()
 
+    # Optimization scenario selection (for One Window mode)
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("**🎯 Optimization Scenarios**")
+    st.sidebar.caption("Choose which cuts to run. Cut 1 is always included.")
+
+    st.sidebar.checkbox(
+        "✅ Cut 1: Max Orders (Recommended)",
+        value=True,
+        disabled=True,
+        help="Always runs - maximizes number of orders delivered",
+        key="enable_cut1"
+    )
+
+    enable_cut2 = st.sidebar.checkbox(
+        "Cut 2: Shortest Route (Optional)",
+        value=False,
+        help="Selects most efficient orders and optimizes for shortest route",
+        key="enable_cut2"
+    )
+
+    enable_cut3 = st.sidebar.checkbox(
+        "Cut 3: High Density (Optional)",
+        value=False,
+        help="Maximizes deliveries per hour by selecting tightly clustered orders",
+        key="enable_cut3"
+    )
+
     # Handle random sample generation with interactive form
     if st.session_state.get('show_random_sample_questions', False):
         st.sidebar.markdown("---")
@@ -1256,91 +1283,13 @@ def main():
                     st.session_state.chat_messages,
                     st.session_state.optimization_context,
                     api_key,
-                    sandbox_data=sandbox_data,
+                    sandbox_data=None,  # Dispatcher Sandbox removed
                     valid_orders=valid_orders,
                     time_matrix=time_matrix,
                     vehicle_capacity=vehicle_capacity,
                     window_minutes=window_minutes,
                     service_times=service_times
                 )
-
-            # If sandbox was updated, save it and recalculate metrics
-            if updated_sandbox is not None and results:
-                # Recalculate metrics for updated sandbox
-                def calc_route_metrics(kept_orders, kept_nodes_data, service_times, time_matrix, vehicle_capacity):
-                    total_units = sum(int(o["units"]) for o in kept_orders)
-                    load_factor = (total_units / vehicle_capacity * 100) if vehicle_capacity > 0 else 0
-
-                    drive_time = 0
-                    if kept_nodes_data and len(kept_nodes_data) > 0:
-                        try:
-                            first_node = int(kept_nodes_data[0]["node"])
-                            drive_time += int(time_matrix[0][first_node])
-                            for i in range(len(kept_nodes_data) - 1):
-                                from_node = int(kept_nodes_data[i]["node"])
-                                to_node = int(kept_nodes_data[i + 1]["node"])
-                                drive_time += int(time_matrix[from_node][to_node])
-                            last_node = int(kept_nodes_data[-1]["node"])
-                            drive_time += int(time_matrix[last_node][0])
-                        except (TypeError, ValueError, IndexError):
-                            drive_time = 0
-
-                    service_time = 0
-                    for o in kept_nodes_data:
-                        node = int(o["node"])
-                        if node < len(service_times):
-                            service_time += int(service_times[node])
-
-                    total_time = drive_time + service_time
-                    route_miles = total_time * 0.5
-                    units_per_mile = total_units / route_miles if route_miles > 0 else 0
-                    stops_per_mile = len(kept_orders) / route_miles if route_miles > 0 else 0
-
-                    return {
-                        'total_units': int(total_units),
-                        'load_factor': float(load_factor),
-                        'drive_time': int(drive_time),
-                        'service_time': int(service_time),
-                        'total_time': int(total_time),
-                        'route_miles': float(route_miles),
-                        'units_per_mile': float(units_per_mile),
-                        'stops_per_mile': float(stops_per_mile)
-                    }
-
-                # Build kept nodes for metrics
-                kept_nodes = []
-                for order in updated_sandbox.get('keep', []):
-                    kept_nodes.append({
-                        'node': order['node'],
-                        'sequence_index': order['sequence_index'],
-                        'arrival_min': 0
-                    })
-
-                new_metrics = calc_route_metrics(
-                    updated_sandbox.get('keep', []),
-                    kept_nodes,
-                    service_times,
-                    time_matrix,
-                    vehicle_capacity
-                )
-
-                # Update sandbox in session state
-                st.session_state.optimization_results['optimizations']['sandbox'] = {
-                    **updated_sandbox,
-                    'cut_type': 'sandbox',
-                    'strategy': 'Dispatcher Sandbox (AI-modified)',
-                    'kept': kept_nodes,
-                    'orders_kept': len(updated_sandbox.get('keep', [])),
-                    **new_metrics
-                }
-
-                # Switch to Dispatcher Sandbox tab to show changes
-                st.session_state.active_tab = 3
-
-            # Add tool execution messages if any
-            if tool_executions:
-                for tool_msg in tool_executions:
-                    st.session_state.chat_messages.append({"role": "assistant", "content": tool_msg})
 
             # Add AI response
             st.session_state.chat_messages.append({"role": "assistant", "content": response})
@@ -1862,284 +1811,276 @@ def main():
                         st.write(f"🔍 Cut 1 (Max Orders, penalty=10000): {len(keep_max)} orders, {metrics_max['total_units']} units ({metrics_max['load_factor']:.0f}%), {metrics_max['total_time']} min")
                         st.write(f"   Density: {metrics_max['stops_per_mile']:.1f} stops/mile, {metrics_max['units_per_mile']:.1f} units/mile")
 
-                        # CUT 2: SHORTEST ROUTE THAT FILLS VAN
-                        # NEW APPROACH: Pre-filter by efficiency (units/distance), select most efficient orders
-                        update_progress(55, "Running Cut 2: Shortest Route (Efficiency-Based)...")
+                        # CUT 2: SHORTEST ROUTE (OPTIONAL)
+                        # Only run if dispatcher enabled Cut 2
+                        if st.session_state.get('enable_cut2', False):
+                            # NEW APPROACH: Pre-filter by efficiency (units/distance), select most efficient orders
+                            update_progress(55, "Running Cut 2: Shortest Route (Efficiency-Based)...")
 
-                        # Step 1: Calculate efficiency score for each order (units per minute from depot)
-                        order_efficiency = []
-                        for idx, order in enumerate(orders_to_optimize):
-                            node = idx + 1  # Node 0 is depot, orders start at node 1
-                            depot_distance = time_matrix[0][node]
-                            if depot_distance > 0:
-                                efficiency = order["units"] / depot_distance  # Units per minute
-                            else:
-                                efficiency = float('inf')  # At depot location
+                            # Step 1: Calculate efficiency score for each order (units per minute from depot)
+                            order_efficiency = []
+                            for idx, order in enumerate(orders_to_optimize):
+                                node = idx + 1  # Node 0 is depot, orders start at node 1
+                                depot_distance = time_matrix[0][node]
+                                if depot_distance > 0:
+                                    efficiency = order["units"] / depot_distance  # Units per minute
+                                else:
+                                    efficiency = float('inf')  # At depot location
 
-                            order_efficiency.append({
-                                'order_idx': idx,
-                                'node': node,
-                                'order': order,
-                                'efficiency': efficiency,
-                                'depot_distance': depot_distance,
-                                'units': order["units"]
-                            })
-
-                        # Step 2: Sort by efficiency (highest first)
-                        order_efficiency.sort(key=lambda x: x['efficiency'], reverse=True)
-
-                        # Step 3: Greedily select most efficient orders until reaching 80-90% capacity
-                        target_capacity_min = vehicle_capacity * 0.80
-                        target_capacity_max = vehicle_capacity * 0.90
-
-                        selected_orders = []
-                        cumulative_units = 0
-
-                        for item in order_efficiency:
-                            if cumulative_units >= target_capacity_max:
-                                break
-                            if cumulative_units + item['units'] <= vehicle_capacity:
-                                selected_orders.append(item)
-                                cumulative_units += item['units']
-                                if cumulative_units >= target_capacity_min:
-                                    # We've hit target range, keep adding until we exceed max or run out
-                                    pass
-
-                        st.write(f"   Pre-selected {len(selected_orders)} most efficient orders ({cumulative_units} units, {cumulative_units/vehicle_capacity*100:.0f}% capacity)")
-                        st.write(f"   Efficiency range: {selected_orders[-1]['efficiency']:.2f} to {selected_orders[0]['efficiency']:.2f} units/min")
-
-                        # Step 4: Build filtered time matrix and demands for only selected orders
-                        selected_nodes = [0] + [item['node'] for item in selected_orders]  # Include depot
-
-                        # Create filtered time matrix
-                        filtered_time_matrix = []
-                        for from_node in selected_nodes:
-                            row = []
-                            for to_node in selected_nodes:
-                                row.append(time_matrix[int(from_node)][int(to_node)])
-                            filtered_time_matrix.append(row)
-
-                        # Create filtered demands and service times
-                        filtered_demands = [0] + [item['units'] for item in selected_orders]
-                        filtered_service_times = [0] + [service_times[item['node']] for item in selected_orders]
-
-                        # Step 5: Optimize ONLY the selected orders for shortest route
-                        update_progress(65, "Optimizing selected efficient orders...")
-                        kept_short_filtered, dropped_short_filtered = optimizer.solve_route(
-                            time_matrix=filtered_time_matrix,
-                            demands=filtered_demands,
-                            vehicle_capacity=vehicle_capacity,
-                            max_route_time=window_minutes,
-                            service_times=filtered_service_times,
-                            drop_penalty=100000  # High penalty - keep all selected orders if possible
-                        )
-
-                        # Map back to original node indexes
-                        kept_short = []
-                        for kept_item in kept_short_filtered:
-                            filtered_node = kept_item['node']
-                            if filtered_node > 0:  # Skip depot
-                                original_node = selected_nodes[filtered_node]
-                                kept_short.append({
-                                    'node': original_node,
-                                    'sequence_index': kept_item['sequence_index'],
-                                    'arrival_min': kept_item['arrival_min']
+                                order_efficiency.append({
+                                    'order_idx': idx,
+                                    'node': node,
+                                    'order': order,
+                                    'efficiency': efficiency,
+                                    'depot_distance': depot_distance,
+                                    'units': order["units"]
                                 })
 
-                        # All non-selected orders are dropped
-                        all_selected_nodes = {item['node'] for item in selected_orders}
-                        kept_nodes = {k['node'] for k in kept_short}
-                        dropped_short = []
-                        for node in range(1, len(time_matrix)):
-                            if node not in all_selected_nodes or node not in kept_nodes:
-                                dropped_short.append(node)
+                            # Step 2: Sort by efficiency (highest first)
+                            order_efficiency.sort(key=lambda x: x['efficiency'], reverse=True)
 
-                        st.write(f"   Optimization kept {len(kept_short)}/{len(selected_orders)} pre-selected orders")
+                            # Step 3: Greedily select most efficient orders until reaching 80-90% capacity
+                            target_capacity_min = vehicle_capacity * 0.80
+                            target_capacity_max = vehicle_capacity * 0.90
 
-                        keep_short, early_short, reschedule_short, cancel_short = disposition.classify_orders(
-                            all_orders=orders_to_optimize,
-                            kept=kept_short,
-                            dropped_nodes=dropped_short,
-                            time_matrix=time_matrix
-                        )
-                        metrics_short = calc_route_metrics(keep_short, kept_short, service_times, time_matrix, vehicle_capacity)
+                            selected_orders = []
+                            cumulative_units = 0
 
-                        optimizations['shortest'] = {
-                            'keep': keep_short,
-                            'early': early_short,
-                            'reschedule': reschedule_short,
-                            'cancel': cancel_short,
-                            'kept': kept_short,
-                            'cut_type': 'shortest_route',
-                            'strategy': 'Shortest route with most efficient orders (units/distance)',
-                            'penalty': 100000,
-                            'orders_kept': len(keep_short),
-                            **metrics_short
-                        }
-
-                        st.write(f"🔍 Cut 2 (Shortest/Efficient): {len(keep_short)} orders, {metrics_short['total_units']} units ({metrics_short['load_factor']:.0f}%), {metrics_short['total_time']} min")
-                        st.write(f"   Efficiency: {metrics_short['units_per_mile']:.1f} units/mile, {metrics_short['stops_per_mile']:.1f} stops/mile")
-
-                        # CUT 3: HIGH DENSITY (maximize stops per minute within cluster, ignore depot distance)
-                        update_progress(75, "Running Cut 3: High Density (tight cluster)...")
-
-                        # Step 1: For each order, calculate average distance to all OTHER orders (cluster cohesion)
-                        order_cluster_scores = []
-                        for idx, order in enumerate(orders_to_optimize):
-                            node = idx + 1
-                            # Calculate average distance to all other orders
-                            distances_to_others = []
-                            for other_idx in range(len(orders_to_optimize)):
-                                if other_idx != idx:
-                                    other_node = other_idx + 1
-                                    try:
-                                        distances_to_others.append(time_matrix[int(node)][int(other_node)])
-                                    except (ValueError, TypeError, IndexError):
+                            for item in order_efficiency:
+                                if cumulative_units >= target_capacity_max:
+                                    break
+                                if cumulative_units + item['units'] <= vehicle_capacity:
+                                    selected_orders.append(item)
+                                    cumulative_units += item['units']
+                                    if cumulative_units >= target_capacity_min:
+                                        # We've hit target range, keep adding until we exceed max or run out
                                         pass
 
-                            avg_distance_to_others = sum(distances_to_others) / len(distances_to_others) if distances_to_others else 0
+                            st.write(f"   Pre-selected {len(selected_orders)} most efficient orders ({cumulative_units} units, {cumulative_units/vehicle_capacity*100:.0f}% capacity)")
+                            st.write(f"   Efficiency range: {selected_orders[-1]['efficiency']:.2f} to {selected_orders[0]['efficiency']:.2f} units/min")
 
-                            order_cluster_scores.append({
-                                'order_idx': idx,
-                                'node': node,
-                                'order': order,
-                                'avg_distance_to_others': avg_distance_to_others,
-                                'units': order["units"]
-                            })
+                            # Step 4: Build filtered time matrix and demands for only selected orders
+                            selected_nodes = [0] + [item['node'] for item in selected_orders]  # Include depot
 
-                        # Step 2: Sort by cluster cohesion (lowest average distance to others = most central in cluster)
-                        order_cluster_scores.sort(key=lambda x: x['avg_distance_to_others'])
+                            # Create filtered time matrix
+                            filtered_time_matrix = []
+                            for from_node in selected_nodes:
+                                row = []
+                                for to_node in selected_nodes:
+                                    row.append(time_matrix[int(from_node)][int(to_node)])
+                                filtered_time_matrix.append(row)
 
-                        # Step 3: Greedily select orders that are closest to each other
-                        target_capacity_min = vehicle_capacity * 0.80
-                        target_capacity_max = vehicle_capacity * 0.90
+                            # Create filtered demands and service times
+                            filtered_demands = [0] + [item['units'] for item in selected_orders]
+                            filtered_service_times = [0] + [service_times[item['node']] for item in selected_orders]
 
-                        dense_selected_orders = []
-                        cumulative_units_dense = 0
+                            # Step 5: Optimize ONLY the selected orders for shortest route
+                            update_progress(65, "Optimizing selected efficient orders...")
+                            kept_short_filtered, dropped_short_filtered = optimizer.solve_route(
+                                time_matrix=filtered_time_matrix,
+                                demands=filtered_demands,
+                                vehicle_capacity=vehicle_capacity,
+                                max_route_time=window_minutes,
+                                service_times=filtered_service_times,
+                                drop_penalty=100000  # High penalty - keep all selected orders if possible
+                            )
 
-                        for item in order_cluster_scores:
-                            if cumulative_units_dense >= target_capacity_max:
-                                break
-                            if cumulative_units_dense + item['units'] <= vehicle_capacity:
-                                dense_selected_orders.append(item)
-                                cumulative_units_dense += item['units']
-                                if cumulative_units_dense >= target_capacity_min:
-                                    pass
+                            # Map back to original node indexes
+                            kept_short = []
+                            for kept_item in kept_short_filtered:
+                                filtered_node = kept_item['node']
+                                if filtered_node > 0:  # Skip depot
+                                    original_node = selected_nodes[filtered_node]
+                                    kept_short.append({
+                                        'node': original_node,
+                                        'sequence_index': kept_item['sequence_index'],
+                                        'arrival_min': kept_item['arrival_min']
+                                    })
 
-                        st.write(f"   Pre-selected {len(dense_selected_orders)} tightly clustered orders ({cumulative_units_dense} units, {cumulative_units_dense/vehicle_capacity*100:.0f}% capacity)")
-                        if dense_selected_orders:
-                            st.write(f"   Cluster cohesion: {dense_selected_orders[0]['avg_distance_to_others']:.1f} to {dense_selected_orders[-1]['avg_distance_to_others']:.1f} min avg distance")
+                            # All non-selected orders are dropped
+                            all_selected_nodes = {item['node'] for item in selected_orders}
+                            kept_nodes = {k['node'] for k in kept_short}
+                            dropped_short = []
+                            for node in range(1, len(time_matrix)):
+                                if node not in all_selected_nodes or node not in kept_nodes:
+                                    dropped_short.append(node)
 
-                        # Step 4: Build filtered time matrix and demands for dense cluster
-                        dense_nodes = [0] + [item['node'] for item in dense_selected_orders]
+                            st.write(f"   Optimization kept {len(kept_short)}/{len(selected_orders)} pre-selected orders")
 
-                        # Create filtered time matrix
-                        dense_time_matrix = []
-                        for from_node in dense_nodes:
-                            row = []
-                            for to_node in dense_nodes:
-                                row.append(time_matrix[int(from_node)][int(to_node)])
-                            dense_time_matrix.append(row)
+                            keep_short, early_short, reschedule_short, cancel_short = disposition.classify_orders(
+                                all_orders=orders_to_optimize,
+                                kept=kept_short,
+                                dropped_nodes=dropped_short,
+                                time_matrix=time_matrix
+                            )
+                            metrics_short = calc_route_metrics(keep_short, kept_short, service_times, time_matrix, vehicle_capacity)
 
-                        # Create filtered demands and service times
-                        dense_demands = [0] + [item['units'] for item in dense_selected_orders]
-                        dense_service_times = [0] + [service_times[item['node']] for item in dense_selected_orders]
+                            optimizations['shortest'] = {
+                                'keep': keep_short,
+                                'early': early_short,
+                                'reschedule': reschedule_short,
+                                'cancel': cancel_short,
+                                'kept': kept_short,
+                                'cut_type': 'shortest_route',
+                                'strategy': 'Shortest route with most efficient orders (units/distance)',
+                                'penalty': 100000,
+                                'orders_kept': len(keep_short),
+                                **metrics_short
+                            }
 
-                        # Step 5: Optimize for shortest route through dense cluster
-                        update_progress(85, "Optimizing dense cluster...")
-                        kept_dense_filtered, dropped_dense_filtered = optimizer.solve_route(
-                            time_matrix=dense_time_matrix,
-                            demands=dense_demands,
-                            vehicle_capacity=vehicle_capacity,
-                            max_route_time=window_minutes,
-                            service_times=dense_service_times,
-                            drop_penalty=100000  # High penalty - keep all selected orders
-                        )
+                            st.write(f"🔍 Cut 2 (Shortest/Efficient): {len(keep_short)} orders, {metrics_short['total_units']} units ({metrics_short['load_factor']:.0f}%), {metrics_short['total_time']} min")
+                            st.write(f"   Efficiency: {metrics_short['units_per_mile']:.1f} units/mile, {metrics_short['stops_per_mile']:.1f} stops/mile")
 
-                        # Map back to original node indexes
-                        kept_dense = []
-                        for kept_item in kept_dense_filtered:
-                            filtered_node = kept_item['node']
-                            if filtered_node > 0:
-                                original_node = dense_nodes[filtered_node]
-                                kept_dense.append({
-                                    'node': original_node,
-                                    'sequence_index': kept_item['sequence_index'],
-                                    'arrival_min': kept_item['arrival_min']
+                        # CUT 3: HIGH DENSITY (OPTIONAL)
+                        # Only run if dispatcher enabled Cut 3
+                        if st.session_state.get('enable_cut3', False):
+                            # maximize stops per minute within cluster, ignore depot distance
+                            update_progress(75, "Running Cut 3: High Density (tight cluster)...")
+
+                            # Step 1: For each order, calculate average distance to all OTHER orders (cluster cohesion)
+                            order_cluster_scores = []
+                            for idx, order in enumerate(orders_to_optimize):
+                                node = idx + 1
+                                # Calculate average distance to all other orders
+                                distances_to_others = []
+                                for other_idx in range(len(orders_to_optimize)):
+                                    if other_idx != idx:
+                                        other_node = other_idx + 1
+                                        try:
+                                            distances_to_others.append(time_matrix[int(node)][int(other_node)])
+                                        except (ValueError, TypeError, IndexError):
+                                            pass
+
+                                avg_distance_to_others = sum(distances_to_others) / len(distances_to_others) if distances_to_others else 0
+
+                                order_cluster_scores.append({
+                                    'order_idx': idx,
+                                    'node': node,
+                                    'order': order,
+                                    'avg_distance_to_others': avg_distance_to_others,
+                                    'units': order["units"]
                                 })
 
-                        # All non-selected orders are dropped
-                        all_dense_nodes = {item['node'] for item in dense_selected_orders}
-                        kept_dense_nodes = {k['node'] for k in kept_dense}
-                        dropped_dense = []
-                        for node in range(1, len(time_matrix)):
-                            if node not in all_dense_nodes or node not in kept_dense_nodes:
-                                dropped_dense.append(node)
+                            # Step 2: Sort by cluster cohesion (lowest average distance to others = most central in cluster)
+                            order_cluster_scores.sort(key=lambda x: x['avg_distance_to_others'])
 
-                        st.write(f"   Optimization kept {len(kept_dense)}/{len(dense_selected_orders)} cluster orders")
+                            # Step 3: Greedily select orders that are closest to each other
+                            target_capacity_min = vehicle_capacity * 0.80
+                            target_capacity_max = vehicle_capacity * 0.90
 
-                        # Calculate cluster-only metrics (first stop to last stop, excluding depot)
-                        cluster_drive_time = 0
-                        if len(kept_dense) > 1:
-                            sorted_dense = sorted(kept_dense, key=lambda x: x['sequence_index'])
-                            for i in range(len(sorted_dense) - 1):
-                                try:
-                                    from_node = int(sorted_dense[i]['node'])
-                                    to_node = int(sorted_dense[i + 1]['node'])
-                                    cluster_drive_time += time_matrix[from_node][to_node]
-                                except (ValueError, TypeError, KeyError, IndexError):
-                                    pass
+                            dense_selected_orders = []
+                            cumulative_units_dense = 0
 
-                        cluster_density = len(kept_dense) / cluster_drive_time if cluster_drive_time > 0 else 0
-                        st.write(f"   Cluster density: {cluster_density:.2f} stops/min within cluster (excluding fulfillment location legs)")
+                            for item in order_cluster_scores:
+                                if cumulative_units_dense >= target_capacity_max:
+                                    break
+                                if cumulative_units_dense + item['units'] <= vehicle_capacity:
+                                    dense_selected_orders.append(item)
+                                    cumulative_units_dense += item['units']
+                                    if cumulative_units_dense >= target_capacity_min:
+                                        pass
 
-                        keep_dense, early_dense, reschedule_dense, cancel_dense = disposition.classify_orders(
-                            all_orders=orders_to_optimize,
-                            kept=kept_dense,
-                            dropped_nodes=dropped_dense,
-                            time_matrix=time_matrix
-                        )
-                        metrics_dense = calc_route_metrics(keep_dense, kept_dense, service_times, time_matrix, vehicle_capacity)
+                            st.write(f"   Pre-selected {len(dense_selected_orders)} tightly clustered orders ({cumulative_units_dense} units, {cumulative_units_dense/vehicle_capacity*100:.0f}% capacity)")
+                            if dense_selected_orders:
+                                st.write(f"   Cluster cohesion: {dense_selected_orders[0]['avg_distance_to_others']:.1f} to {dense_selected_orders[-1]['avg_distance_to_others']:.1f} min avg distance")
 
-                        # Store cluster-specific density metric
-                        metrics_dense['cluster_density'] = cluster_density
-                        metrics_dense['cluster_drive_time'] = cluster_drive_time
+                            # Step 4: Build filtered time matrix and demands for dense cluster
+                            dense_nodes = [0] + [item['node'] for item in dense_selected_orders]
 
-                        optimizations['high_density'] = {
-                            'keep': keep_dense,
-                            'early': early_dense,
-                            'reschedule': reschedule_dense,
-                            'cancel': cancel_dense,
-                            'kept': kept_dense,
-                            'cut_type': 'high_density',
-                            'strategy': 'High-density cluster (maximize stops/min within cluster)',
-                            'penalty': 100000,
-                            'orders_kept': len(keep_dense),
-                            **metrics_dense
-                        }
+                            # Create filtered time matrix
+                            dense_time_matrix = []
+                            for from_node in dense_nodes:
+                                row = []
+                                for to_node in dense_nodes:
+                                    row.append(time_matrix[int(from_node)][int(to_node)])
+                                dense_time_matrix.append(row)
 
-                        st.write(f"🔍 Cut 3 (High Density): {len(keep_dense)} orders, {metrics_dense['total_units']} units ({metrics_dense['load_factor']:.0f}%), {metrics_dense['total_time']} min")
-                        st.write(f"   Cluster: {cluster_density:.2f} stops/min, overall: {metrics_dense['stops_per_mile']:.1f} stops/mile")
+                            # Create filtered demands and service times
+                            dense_demands = [0] + [item['units'] for item in dense_selected_orders]
+                            dense_service_times = [0] + [service_times[item['node']] for item in dense_selected_orders]
+
+                            # Step 5: Optimize for shortest route through dense cluster
+                            update_progress(85, "Optimizing dense cluster...")
+                            kept_dense_filtered, dropped_dense_filtered = optimizer.solve_route(
+                                time_matrix=dense_time_matrix,
+                                demands=dense_demands,
+                                vehicle_capacity=vehicle_capacity,
+                                max_route_time=window_minutes,
+                                service_times=dense_service_times,
+                                drop_penalty=100000  # High penalty - keep all selected orders
+                            )
+
+                            # Map back to original node indexes
+                            kept_dense = []
+                            for kept_item in kept_dense_filtered:
+                                filtered_node = kept_item['node']
+                                if filtered_node > 0:
+                                    original_node = dense_nodes[filtered_node]
+                                    kept_dense.append({
+                                        'node': original_node,
+                                        'sequence_index': kept_item['sequence_index'],
+                                        'arrival_min': kept_item['arrival_min']
+                                    })
+
+                            # All non-selected orders are dropped
+                            all_dense_nodes = {item['node'] for item in dense_selected_orders}
+                            kept_dense_nodes = {k['node'] for k in kept_dense}
+                            dropped_dense = []
+                            for node in range(1, len(time_matrix)):
+                                if node not in all_dense_nodes or node not in kept_dense_nodes:
+                                    dropped_dense.append(node)
+
+                            st.write(f"   Optimization kept {len(kept_dense)}/{len(dense_selected_orders)} cluster orders")
+
+                            # Calculate cluster-only metrics (first stop to last stop, excluding depot)
+                            cluster_drive_time = 0
+                            if len(kept_dense) > 1:
+                                sorted_dense = sorted(kept_dense, key=lambda x: x['sequence_index'])
+                                for i in range(len(sorted_dense) - 1):
+                                    try:
+                                        from_node = int(sorted_dense[i]['node'])
+                                        to_node = int(sorted_dense[i + 1]['node'])
+                                        cluster_drive_time += time_matrix[from_node][to_node]
+                                    except (ValueError, TypeError, KeyError, IndexError):
+                                        pass
+
+                            cluster_density = len(kept_dense) / cluster_drive_time if cluster_drive_time > 0 else 0
+                            st.write(f"   Cluster density: {cluster_density:.2f} stops/min within cluster (excluding fulfillment location legs)")
+
+                            keep_dense, early_dense, reschedule_dense, cancel_dense = disposition.classify_orders(
+                                all_orders=orders_to_optimize,
+                                kept=kept_dense,
+                                dropped_nodes=dropped_dense,
+                                time_matrix=time_matrix
+                            )
+                            metrics_dense = calc_route_metrics(keep_dense, kept_dense, service_times, time_matrix, vehicle_capacity)
+
+                            # Store cluster-specific density metric
+                            metrics_dense['cluster_density'] = cluster_density
+                            metrics_dense['cluster_drive_time'] = cluster_drive_time
+
+                            optimizations['high_density'] = {
+                                'keep': keep_dense,
+                                'early': early_dense,
+                                'reschedule': reschedule_dense,
+                                'cancel': cancel_dense,
+                                'kept': kept_dense,
+                                'cut_type': 'high_density',
+                                'strategy': 'High-density cluster (maximize stops/min within cluster)',
+                                'penalty': 100000,
+                                'orders_kept': len(keep_dense),
+                                **metrics_dense
+                            }
+
+                            st.write(f"🔍 Cut 3 (High Density): {len(keep_dense)} orders, {metrics_dense['total_units']} units ({metrics_dense['load_factor']:.0f}%), {metrics_dense['total_time']} min")
+                            st.write(f"   Cluster: {cluster_density:.2f} stops/min, overall: {metrics_dense['stops_per_mile']:.1f} stops/mile")
 
                         st.write(f"\n📊 SUMMARY: Total input orders: {len(valid_orders)}")
                         st.write(f"   Cut 1 (Max Orders): {len(keep_max)} orders, {metrics_max['total_units']} units, {metrics_max['total_time']} min, {metrics_max['stops_per_mile']:.1f} stops/mi")
-                        st.write(f"   Cut 2 (Shortest): {len(keep_short)} orders, {metrics_short['total_units']} units, {metrics_short['total_time']} min, {metrics_short['stops_per_mile']:.1f} stops/mi")
-                        st.write(f"   Cut 3 (High Density): {len(keep_dense)} orders, {metrics_dense['total_units']} units, {metrics_dense['total_time']} min, {cluster_density:.2f} cluster stops/min")
-
-                        # CUT 4: DISPATCHER SANDBOX (manual editing - initialized from Cut 1)
-                        # Initialize sandbox from Cut 1 (default), will be editable in the tab
-                        optimizations['sandbox'] = {
-                            'keep': keep_max.copy(),
-                            'early': early_max.copy(),
-                            'reschedule': reschedule_max.copy(),
-                            'cancel': cancel_max.copy(),
-                            'kept': [k.copy() for k in kept_max],
-                            'cut_type': 'sandbox',
-                            'strategy': 'Dispatcher Sandbox (manual editing)',
-                            'penalty': 10000,
-                            'orders_kept': len(keep_max),
-                            **metrics_max
-                        }
+                        if st.session_state.get('enable_cut2', False) and 'shortest' in optimizations:
+                            st.write(f"   Cut 2 (Shortest): {len(keep_short)} orders, {metrics_short['total_units']} units, {metrics_short['total_time']} min, {metrics_short['stops_per_mile']:.1f} stops/mi")
+                        if st.session_state.get('enable_cut3', False) and 'high_density' in optimizations:
+                            st.write(f"   Cut 3 (High Density): {len(keep_dense)} orders, {metrics_dense['total_units']} units, {metrics_dense['total_time']} min, {cluster_density:.2f} cluster stops/min")
 
                         # Generate AI explanations for MAX ORDERS strategy (recommended default) - ONLY if use_ai is True
                         if st.session_state.get('use_ai', False):
@@ -2166,7 +2107,7 @@ def main():
                         # Store both optimization results in session state
                         update_progress(90, "Storing results...")
                         st.session_state.optimization_results = {
-                                'optimizations': optimizations,  # Dict with 'max_orders', 'shortest', 'high_density', 'sandbox'
+                                'optimizations': optimizations,  # Dict with 'max_orders', 'shortest' (optional), 'high_density' (optional)
                                 'geocoded': geocoded,
                                 'depot_address': depot_address,
                                 'valid_orders': orders_to_optimize,
@@ -2254,20 +2195,16 @@ def main():
                         if "active_tab" not in st.session_state:
                             st.session_state.active_tab = 0
 
-                        # Show 2-cut comparison summary
-                        # Create tabs for four optimization cuts with order counts in titles
+                        # Build tab options dynamically based on which cuts were run
                         max_orders_count = optimizations['max_orders']['orders_kept']
-                        shortest_orders_count = optimizations['shortest']['orders_kept']
-                        density_orders_count = optimizations['high_density']['orders_kept']
-                        sandbox_orders_count = optimizations['sandbox']['orders_kept']
+                        tab_options = [f"✅ Cut 1: Max Orders ({max_orders_count} Orders) - RECOMMENDED"]
 
-                        # Tab selector that persists in session state
-                        tab_options = [
-                            f"✅ Cut 1: Max Orders ({max_orders_count} Orders) - RECOMMENDED",
-                            f"⚡ Cut 2: Shortest Route ({shortest_orders_count} Orders)",
-                            f"🎯 Cut 3: High Density ({density_orders_count} Orders)",
-                            f"✏️ Cut 4: Dispatcher Sandbox ({sandbox_orders_count} Orders)"
-                        ]
+                        if 'shortest' in optimizations:
+                            shortest_orders_count = optimizations['shortest']['orders_kept']
+                            tab_options.append(f"⚡ Cut 2: Shortest Route ({shortest_orders_count} Orders)")
+                        if 'high_density' in optimizations:
+                            density_orders_count = optimizations['high_density']['orders_kept']
+                            tab_options.append(f"🎯 Cut 3: High Density ({density_orders_count} Orders)")
 
                         selected_tab = st.selectbox(
                             "Select View:",
@@ -2307,8 +2244,8 @@ def main():
                                 show_ai_explanations=True
                             )
 
-                        # TAB 2: SHORTEST ROUTE THAT FILLS VAN
-                        elif st.session_state.active_tab == 1:
+                        # TAB 2: SHORTEST ROUTE (only if Cut 2 was run)
+                        elif st.session_state.active_tab == 1 and 'shortest' in optimizations:
                             opt = optimizations['shortest']
                             st.info(f"**Cut 2 - Shortest Route (Efficiency-Based)**: Selects most efficient orders (high units/distance) targeting 80-90% capacity - **{opt['orders_kept']} orders, {opt['total_units']} units ({opt['load_factor']:.0f}%), {opt['route_miles']:.1f} miles, {opt['total_time']} min**")
 
@@ -2330,412 +2267,32 @@ def main():
                                 show_ai_explanations=False
                             )
 
-                        # TAB 3: HIGH DENSITY CLUSTER
-                        elif st.session_state.active_tab == 2:
-                            opt = optimizations['high_density']
-                            st.info(f"**Cut 3 - High Density Cluster**: Selects tightly grouped orders to maximize density within cluster - **{opt['orders_kept']} orders, {opt['total_units']} units ({opt['load_factor']:.0f}%), {opt['route_miles']:.1f} miles, {opt['total_time']} min**")
+                        # TAB 3: HIGH DENSITY (only if Cut 3 was run)
+                        # Dynamic tab index: 1 if only Cut 2, 2 if both Cut 2 and Cut 3
+                        elif st.session_state.active_tab >= 1 and 'high_density' in optimizations:
+                            # If Cut 2 wasn't run, this is tab 1, otherwise tab 2
+                            expected_tab_index = 1 if 'shortest' not in optimizations else 2
+                            if st.session_state.active_tab == expected_tab_index:
+                                opt = optimizations['high_density']
+                                st.info(f"**Cut 3 - High Density Cluster**: Selects tightly grouped orders to maximize density within cluster - **{opt['orders_kept']} orders, {opt['total_units']} units ({opt['load_factor']:.0f}%), {opt['route_miles']:.1f} miles, {opt['total_time']} min**")
 
-                            display_optimization_results(
-                                keep=opt['keep'],
-                                early=opt['early'],
-                                reschedule=opt['reschedule'],
-                                cancel=opt['cancel'],
-                                kept=opt['kept'],
-                                service_times=service_times,
-                                geocoded=geocoded,
-                                depot_address=depot_address,
-                                valid_orders=valid_orders,
-                                addresses=addresses,
-                                time_matrix=time_matrix,
-                                vehicle_capacity=vehicle_capacity,
-                                window_minutes=window_minutes,
-                                strategy_desc=opt['strategy'],
-                                show_ai_explanations=False
-                            )
-
-                        # TAB 4: DISPATCHER SANDBOX (MANUAL EDITING)
-                        elif st.session_state.active_tab == 3:
-                            st.info("**Cut 4 - Dispatcher Sandbox**: Manually adjust orders, reorder stops, and move orders between categories. Map and KPIs update in real-time.")
-
-                            # Selector to choose starting cut
-                            starting_cut = st.selectbox(
-                                "Start from:",
-                                options=["Cut 1: Max Orders", "Cut 2: Shortest Route", "Cut 3: High Density"],
-                                key="sandbox_starting_cut"
-                            )
-
-                            if st.button("📋 Load Selected Cut", type="primary", use_container_width=True):
-                                    # Load selected cut into sandbox
-                                    if "Cut 1" in starting_cut:
-                                        source_opt = optimizations['max_orders']
-                                    elif "Cut 2" in starting_cut:
-                                        source_opt = optimizations['shortest']
-                                    else:
-                                        source_opt = optimizations['high_density']
-
-                                    # Deep copy to avoid modifying source
-                                    st.session_state.optimization_results['optimizations']['sandbox'] = {
-                                        'keep': [o.copy() for o in source_opt['keep']],
-                                        'early': [o.copy() for o in source_opt['early']],
-                                        'reschedule': [o.copy() for o in source_opt['reschedule']],
-                                        'cancel': [o.copy() for o in source_opt['cancel']],
-                                        'kept': [k.copy() for k in source_opt['kept']],
-                                        'cut_type': 'sandbox',
-                                        'strategy': f'Dispatcher Sandbox (from {starting_cut})',
-                                        'penalty': source_opt['penalty'],
-                                        'orders_kept': source_opt['orders_kept'],
-                                        **{k: v for k, v in source_opt.items() if k not in ['keep', 'early', 'reschedule', 'cancel', 'kept', 'cut_type', 'strategy', 'penalty', 'orders_kept']}
-                                    }
-                                    # Stay on Dispatcher Sandbox tab
-                                    st.session_state.active_tab = 3
-                                    st.success(f"✅ Loaded {starting_cut} into Sandbox! Scroll down to see updated map and make edits.")
-                                    st.rerun()
-
-                            st.markdown("---")
-
-                            opt = optimizations['sandbox']
-
-                            # Show current metrics (with safety checks) - matching other cuts
-                            st.subheader("📊 Summary")
-                            try:
-                                total_units = opt.get('total_units', 0)
-                                load_factor = opt.get('load_factor', 0)
-                                drive_time = opt.get('drive_time', 0)
-                                service_time = opt.get('service_time', 0)
-                                total_time = opt.get('total_time', 0)
-                                route_miles = opt.get('route_miles', 0)
-                                orders_kept = opt.get('orders_kept', 0)
-                                deliveries_per_hour = (orders_kept / (total_time / 60)) if total_time > 0 else 0
-
-                                # Calculate dead leg (return time from last stop to fulfillment)
-                                dead_leg_time = 0
-                                if opt.get('kept') and len(opt['kept']) > 0:
-                                    try:
-                                        last_node = int(opt['kept'][-1]['node'])
-                                        dead_leg_time = int(time_matrix[last_node][0])
-                                    except (ValueError, TypeError, KeyError, IndexError):
-                                        dead_leg_time = 0
-
-                                # First row of KPIs
-                                col1, col2, col3, col4 = st.columns(4)
-                                with col1:
-                                    st.metric("KEEP Orders", orders_kept)
-                                with col2:
-                                    capacity_pct = load_factor
-                                    st.metric("Capacity Used", f"{total_units}/{vehicle_capacity}", f"{capacity_pct:.1f}%")
-                                with col3:
-                                    st.metric("Total Route Time", format_time_minutes(total_time),
-                                             f"Drive: {format_time_minutes(drive_time)}, Service: {format_time_minutes(service_time)}")
-                                with col4:
-                                    total_orders = orders_kept + len(opt.get('early', [])) + len(opt.get('reschedule', [])) + len(opt.get('cancel', []))
-                                    st.metric("Total Orders", total_orders)
-
-                                # Second row of KPIs
-                                col5, col6, col7, col8 = st.columns(4)
-                                with col5:
-                                    st.metric("Load Factor", f"{load_factor:.1f}%")
-                                with col6:
-                                    st.metric("Route Miles", f"{route_miles:.1f}")
-                                with col7:
-                                    st.metric("Deliveries/Hour", f"{deliveries_per_hour:.1f}")
-                                with col8:
-                                    st.metric("Dead Leg", f"{dead_leg_time} min", help="Time from last delivery back to fulfillment location")
-                            except Exception as e:
-                                st.error(f"Error displaying metrics: {e}")
-
-                            st.markdown("---")
-
-                            st.subheader("📝 Edit Orders")
-
-                            # Combine all orders into a single editable dataframe
-                            all_orders_for_edit = []
-
-                            # KEEP orders
-                            for order in opt['keep']:
-                                all_orders_for_edit.append({
-                                    'externalOrderId': order['order_id'],
-                                    'customerID': order['customer_name'],
-                                    'numberOfUnits': order['units'],
-                                    'Status': 'KEEP',
-                                    'Sequence': order.get('sequence_index', 0) + 1,
-                                    'address': order['delivery_address']
-                                })
-
-                            # EARLY orders
-                            for order in opt['early']:
-                                all_orders_for_edit.append({
-                                    'externalOrderId': order['order_id'],
-                                    'customerID': order['customer_name'],
-                                    'numberOfUnits': order['units'],
-                                    'Status': 'EARLY',
-                                    'Sequence': None,
-                                    'address': order['delivery_address']
-                                })
-
-                            # RESCHEDULE orders
-                            for order in opt['reschedule']:
-                                all_orders_for_edit.append({
-                                    'externalOrderId': order['order_id'],
-                                    'customerID': order['customer_name'],
-                                    'numberOfUnits': order['units'],
-                                    'Status': 'RESCHEDULE',
-                                    'Sequence': None,
-                                    'address': order['delivery_address']
-                                })
-
-                            # CANCEL orders
-                            for order in opt['cancel']:
-                                all_orders_for_edit.append({
-                                    'externalOrderId': order['order_id'],
-                                    'customerID': order['customer_name'],
-                                    'numberOfUnits': order['units'],
-                                    'Status': 'CANCEL',
-                                    'Sequence': None,
-                                    'address': order['delivery_address']
-                                })
-
-                            edit_df = pd.DataFrame(all_orders_for_edit)
-
-                            st.write("**Instructions**: Change Status dropdown to move orders between categories. For KEEP orders, adjust Sequence to reorder stops. Click Apply Changes when done.")
-
-                            edited_df = st.data_editor(
-                                edit_df,
-                                column_config={
-                                    "Status": st.column_config.SelectboxColumn(
-                                        "Status",
-                                        options=["KEEP", "EARLY", "RESCHEDULE", "CANCEL"],
-                                        required=True
-                                    ),
-                                    "Sequence": st.column_config.NumberColumn(
-                                        "Sequence",
-                                        help="Stop order for KEEP orders (1, 2, 3...)",
-                                        min_value=1,
-                                        step=1
-                                    )
-                                },
-                                disabled=["externalOrderId", "customerID", "numberOfUnits", "address"],
-                                hide_index=True,
-                                use_container_width=True,
-                                key="sandbox_editor"
-                            )
-
-                            if st.button("✅ Apply Changes & Recalculate", type="primary", use_container_width=True):
-                                # Rebuild optimization based on edited dataframe
-                                new_keep = []
-                                new_early = []
-                                new_reschedule = []
-                                new_cancel = []
-
-                                for _, row in edited_df.iterrows():
-                                    # Find original order
-                                    order_id = row['externalOrderId']
-                                    original_order = None
-                                    for o in valid_orders:
-                                        if o['order_id'] == order_id:
-                                            original_order = o
-                                            break
-
-                                    if not original_order:
-                                        continue
-
-                                    # Build order dict based on status
-                                    order_dict = {
-                                        'order_id': order_id,
-                                        'customer_name': row['customerID'],
-                                        'delivery_address': row['address'],
-                                        'units': row['numberOfUnits'],
-                                        'early_delivery_ok': original_order['early_delivery_ok'],
-                                        'category': row['Status']
-                                    }
-
-                                    if row['Status'] == 'KEEP':
-                                        seq = int(row['Sequence']) if pd.notna(row['Sequence']) else 1
-                                        order_dict['sequence_index'] = seq - 1
-                                        order_dict['node'] = valid_orders.index(original_order) + 1
-                                        new_keep.append(order_dict)
-                                    elif row['Status'] == 'EARLY':
-                                        order_dict['reason'] = 'Moved to Early by dispatcher'
-                                        new_early.append(order_dict)
-                                    elif row['Status'] == 'RESCHEDULE':
-                                        order_dict['reason'] = 'Moved to Reschedule by dispatcher'
-                                        new_reschedule.append(order_dict)
-                                    else:  # CANCEL
-                                        order_dict['reason'] = 'Moved to Cancel by dispatcher'
-                                        new_cancel.append(order_dict)
-
-                                # Sort KEEP by sequence
-                                new_keep.sort(key=lambda x: x['sequence_index'])
-
-                                # Recalculate route metrics
-                                # Build kept nodes for metrics calculation
-                                new_kept = []
-                                for order in new_keep:
-                                    new_kept.append({
-                                        'node': order['node'],
-                                        'sequence_index': order['sequence_index'],
-                                        'arrival_min': 0  # Placeholder, will recalc
-                                    })
-
-                                # Calculate metrics
-                                def calc_route_metrics_sandbox(kept_orders, kept_nodes_data, service_times, time_matrix, vehicle_capacity):
-                                    total_units = sum(int(o["units"]) for o in kept_orders)
-                                    load_factor = (total_units / vehicle_capacity * 100) if vehicle_capacity > 0 else 0
-
-                                    drive_time = 0
-                                    if kept_nodes_data and len(kept_nodes_data) > 0:
-                                        try:
-                                            # Depot to first stop
-                                            first_node = int(kept_nodes_data[0]["node"])
-                                            drive_time += int(time_matrix[0][first_node])
-
-                                            # Between stops
-                                            for i in range(len(kept_nodes_data) - 1):
-                                                from_node = int(kept_nodes_data[i]["node"])
-                                                to_node = int(kept_nodes_data[i + 1]["node"])
-                                                drive_time += int(time_matrix[from_node][to_node])
-
-                                            # Last stop to depot
-                                            last_node = int(kept_nodes_data[-1]["node"])
-                                            drive_time += int(time_matrix[last_node][0])
-                                        except (TypeError, ValueError, IndexError) as e:
-                                            st.warning(f"Error calculating drive time: {e}")
-                                            drive_time = 0
-
-                                    service_time = 0
-                                    for o in kept_nodes_data:
-                                        node = int(o["node"])
-                                        if node < len(service_times):
-                                            service_time += int(service_times[node])
-
-                                    total_time = drive_time + service_time
-
-                                    route_miles = total_time * 0.5
-                                    units_per_mile = total_units / route_miles if route_miles > 0 else 0
-                                    stops_per_mile = len(kept_orders) / route_miles if route_miles > 0 else 0
-
-                                    return {
-                                        'total_units': int(total_units),
-                                        'load_factor': float(load_factor),
-                                        'drive_time': int(drive_time),
-                                        'service_time': int(service_time),
-                                        'total_time': int(total_time),
-                                        'route_miles': float(route_miles),
-                                        'units_per_mile': float(units_per_mile),
-                                        'stops_per_mile': float(stops_per_mile)
-                                    }
-
-                                new_metrics = calc_route_metrics_sandbox(new_keep, new_kept, service_times, time_matrix, vehicle_capacity)
-
-                                # Update sandbox optimization
-                                st.session_state.optimization_results['optimizations']['sandbox'] = {
-                                    'keep': new_keep,
-                                    'early': new_early,
-                                    'reschedule': new_reschedule,
-                                    'cancel': new_cancel,
-                                    'kept': new_kept,
-                                    'cut_type': 'sandbox',
-                                    'strategy': 'Dispatcher Sandbox (manually edited)',
-                                    'penalty': 0,
-                                    'orders_kept': len(new_keep),
-                                    **new_metrics
-                                }
-
-                                # Stay on Dispatcher Sandbox tab
-                                st.session_state.active_tab = 3
-                                st.success(f"✅ Recalculated! Route now has {len(new_keep)} orders. Scroll down to see updated map.")
-                                st.rerun()
-
-                            st.markdown("---")
-
-                            # Refresh opt from session state (in case it was updated by Apply Changes button)
-                            opt = st.session_state.optimization_results['optimizations']['sandbox']
-
-                            # Display map only (no detailed breakdowns)
-                            st.subheader("📍 Route Map")
-                            try:
-                                # Ensure all required data exists
-                                if opt.get('keep') is not None and geocoded and depot_address:
-                                    map_chart = create_map_visualization(
-                                        opt.get('keep', []),
-                                        opt.get('cancel', []),
-                                        opt.get('early', []),
-                                        opt.get('reschedule', []),
-                                        geocoded,
-                                        depot_address,
-                                        valid_orders,
-                                        addresses,
-                                        service_times
-                                    )
-                                    if map_chart:
-                                        st_folium(map_chart, width=1200, height=600)
-
-                                        # Map legend
-                                        col1, col2, col3, col4 = st.columns(4)
-                                        with col1:
-                                            st.markdown("🟢 **Green circle**: Orders to KEEP (on route)")
-                                        with col2:
-                                            st.markdown("🕒 **Orange clock**: Early/Reschedule options")
-                                        with col3:
-                                            st.markdown("❌ **Red X**: Orders to CANCEL (too far)")
-                                        with col4:
-                                            st.markdown("🏠 **Blue home**: Fulfillment Location")
-                                    else:
-                                        st.warning("❌ Error creating map: bad argument type for built-in operation")
-                                        st.info("💡 Try loading a different cut or re-running the optimization.")
-                                else:
-                                    st.warning("⚠️ Map data not available. Please load a cut using the button above.")
-                            except Exception as e:
-                                st.warning(f"❌ Error creating map: {str(e)}")
-                                st.info("💡 Try loading a different cut or re-running the optimization.")
-
-                            # Display route sequence table with service times
-                            st.markdown("---")
-                            keep_orders = opt.get('keep', [])
-                            if keep_orders:
-                                st.subheader("🗺️ Route Sequence")
-
-                                # Build route sequence string
-                                route_parts = ["Fulfillment Location"]
-                                for k in sorted(keep_orders, key=lambda x: x.get("sequence_index", 0)):
-                                    route_parts.append(f"Order {k['order_id']}")
-                                route_parts.append("Fulfillment Location")
-                                st.write(" → ".join(route_parts))
-
-                                st.markdown("---")
-
-                                # Build detailed table
-                                route_table_data = []
-                                for k in sorted(keep_orders, key=lambda x: x.get("sequence_index", 0)):
-                                    try:
-                                        node = int(k.get('node', 0))
-                                        service_time = int(service_times[node]) if service_times and node < len(service_times) else 0
-
-                                        row = {
-                                            "Seq": int(k.get("sequence_index", 0)) + 1,
-                                            "externalOrderId": str(k.get("order_id", "")),
-                                            "customerID": str(k.get("customer_name", "")),
-                                            "address": str(k.get("delivery_address", "")),
-                                            "numberOfUnits": int(k.get("units", 0))
-                                        }
-
-                                        # Add all original CSV fields
-                                        csv_fields = extract_all_csv_fields(k)
-                                        row.update(csv_fields)
-
-                                        # Add service time at the end
-                                        row["Est. Service Time"] = f"{service_time} min"
-
-                                        route_table_data.append(row)
-                                    except (ValueError, TypeError, KeyError, IndexError):
-                                        continue
-
-                                if route_table_data:
-                                    route_df = pd.DataFrame(route_table_data)
-                                    st.dataframe(route_df, use_container_width=True)
-                                else:
-                                    st.info("No route data available")
-                            else:
-                                st.info("No orders in route. Load a cut or add orders to KEEP status.")
+                                display_optimization_results(
+                                    keep=opt['keep'],
+                                    early=opt['early'],
+                                    reschedule=opt['reschedule'],
+                                    cancel=opt['cancel'],
+                                    kept=opt['kept'],
+                                    service_times=service_times,
+                                    geocoded=geocoded,
+                                    depot_address=depot_address,
+                                    valid_orders=valid_orders,
+                                    addresses=addresses,
+                                    time_matrix=time_matrix,
+                                    vehicle_capacity=vehicle_capacity,
+                                    window_minutes=window_minutes,
+                                    strategy_desc=opt['strategy'],
+                                    show_ai_explanations=False
+                                )
 
                 elif mode == "Full day":
                     st.success("🔴 CHECKPOINT A: Full day mode started")
@@ -3442,20 +2999,16 @@ Be concise but thorough. Focus on actionable insights."""
                 if "active_tab" not in st.session_state:
                     st.session_state.active_tab = 0
 
-                # Show 2-cut comparison summary
-                # Create tabs for four optimization cuts with order counts in titles
+                # Build tab options dynamically based on which cuts were run
                 max_orders_count = optimizations['max_orders']['orders_kept']
-                shortest_orders_count = optimizations['shortest']['orders_kept']
-                density_orders_count = optimizations['high_density']['orders_kept']
-                sandbox_orders_count = optimizations['sandbox']['orders_kept']
+                tab_options = [f"✅ Cut 1: Max Orders ({max_orders_count} Orders) - RECOMMENDED"]
 
-                # Tab selector that persists in session state
-                tab_options = [
-                    f"✅ Cut 1: Max Orders ({max_orders_count} Orders) - RECOMMENDED",
-                    f"⚡ Cut 2: Shortest Route ({shortest_orders_count} Orders)",
-                    f"🎯 Cut 3: High Density ({density_orders_count} Orders)",
-                    f"✏️ Cut 4: Dispatcher Sandbox ({sandbox_orders_count} Orders)"
-                ]
+                if 'shortest' in optimizations:
+                    shortest_orders_count = optimizations['shortest']['orders_kept']
+                    tab_options.append(f"⚡ Cut 2: Shortest Route ({shortest_orders_count} Orders)")
+                if 'high_density' in optimizations:
+                    density_orders_count = optimizations['high_density']['orders_kept']
+                    tab_options.append(f"🎯 Cut 3: High Density ({density_orders_count} Orders)")
 
                 selected_tab = st.selectbox(
                     "Select View:",
@@ -3495,8 +3048,8 @@ Be concise but thorough. Focus on actionable insights."""
                         show_ai_explanations=True
                     )
 
-                # TAB 2: SHORTEST ROUTE THAT FILLS VAN
-                elif st.session_state.active_tab == 1:
+                # TAB 2: SHORTEST ROUTE (only if Cut 2 was run)
+                elif st.session_state.active_tab == 1 and 'shortest' in optimizations:
                     opt = optimizations['shortest']
                     st.info(f"**Cut 2 - Shortest Route (Efficiency-Based)**: Selects most efficient orders (high units/distance) targeting 80-90% capacity - **{opt['orders_kept']} orders, {opt['total_units']} units ({opt['load_factor']:.0f}%), {opt['route_miles']:.1f} miles, {opt['total_time']} min**")
 
@@ -3518,90 +3071,32 @@ Be concise but thorough. Focus on actionable insights."""
                         show_ai_explanations=False
                     )
 
-                # TAB 3: HIGH DENSITY CLUSTER
-                elif st.session_state.active_tab == 2:
-                    opt = optimizations['high_density']
-                    st.info(f"**Cut 3 - High Density Cluster**: Selects tightly grouped orders to maximize density within cluster - **{opt['orders_kept']} orders, {opt['total_units']} units ({opt['load_factor']:.0f}%), {opt['route_miles']:.1f} miles, {opt['total_time']} min**")
+                # TAB 3: HIGH DENSITY (only if Cut 3 was run)
+                # Dynamic tab index: 1 if only Cut 2, 2 if both Cut 2 and Cut 3
+                elif st.session_state.active_tab >= 1 and 'high_density' in optimizations:
+                    # If Cut 2 wasn't run, this is tab 1, otherwise tab 2
+                    expected_tab_index = 1 if 'shortest' not in optimizations else 2
+                    if st.session_state.active_tab == expected_tab_index:
+                        opt = optimizations['high_density']
+                        st.info(f"**Cut 3 - High Density Cluster**: Selects tightly grouped orders to maximize density within cluster - **{opt['orders_kept']} orders, {opt['total_units']} units ({opt['load_factor']:.0f}%), {opt['route_miles']:.1f} miles, {opt['total_time']} min**")
 
-                    display_optimization_results(
-                        keep=opt['keep'],
-                        early=opt['early'],
-                        reschedule=opt['reschedule'],
-                        cancel=opt['cancel'],
-                        kept=opt['kept'],
-                        service_times=service_times,
-                        geocoded=geocoded,
-                        depot_address=depot_address,
-                        valid_orders=valid_orders_display,
-                        addresses=addresses,
-                        time_matrix=time_matrix,
-                        vehicle_capacity=vehicle_capacity,
-                        window_minutes=window_minutes,
-                        strategy_desc=opt['strategy'],
-                        show_ai_explanations=False
-                    )
-
-                # TAB 4: DISPATCHER SANDBOX (MANUAL EDITING)
-                elif st.session_state.active_tab == 3:
-                    st.info("**Cut 4 - Dispatcher Sandbox**: Manually adjust orders, reorder stops, and move orders between categories. Map and KPIs update in real-time.")
-
-                    # Selector to choose starting cut
-                    starting_cut = st.selectbox(
-                        "Start from:",
-                        options=["Cut 1: Max Orders", "Cut 2: Shortest Route", "Cut 3: High Density"],
-                        key="cached_sandbox_starting_cut"
-                    )
-
-                    if st.button("📋 Load Selected Cut", type="primary", use_container_width=True, key="cached_load_cut_button"):
-                            # Load selected cut into sandbox
-                            if "Cut 1" in starting_cut:
-                                source_opt = optimizations['max_orders']
-                            elif "Cut 2" in starting_cut:
-                                source_opt = optimizations['shortest']
-                            else:
-                                source_opt = optimizations['high_density']
-
-                            # Deep copy to avoid modifying source
-                            st.session_state.optimization_results['optimizations']['sandbox'] = {
-                                'keep': [o.copy() for o in source_opt['keep']],
-                                'early': [o.copy() for o in source_opt['early']],
-                                'reschedule': [o.copy() for o in source_opt['reschedule']],
-                                'cancel': [o.copy() for o in source_opt['cancel']],
-                                'kept': [k.copy() for k in source_opt['kept']],
-                                'cut_type': 'sandbox',
-                                'strategy': f'Dispatcher Sandbox (from {starting_cut})',
-                                'penalty': source_opt['penalty'],
-                                'orders_kept': source_opt['orders_kept'],
-                                **{k: v for k, v in source_opt.items() if k not in ['keep', 'early', 'reschedule', 'cancel', 'kept', 'cut_type', 'strategy', 'penalty', 'orders_kept']}
-                            }
-                            # Stay on Dispatcher Sandbox tab
-                            st.session_state.active_tab = 3
-                            st.success(f"✅ Loaded {starting_cut} into Sandbox! Scroll down to see updated map and make edits.")
-                            st.rerun()
-
-                    st.markdown("---")
-
-                    opt = optimizations['sandbox']
-
-                    # Use the full sandbox display logic from the original code
-                    display_optimization_results(
-                        keep=opt['keep'],
-                        early=opt['early'],
-                        reschedule=opt['reschedule'],
-                        cancel=opt['cancel'],
-                        kept=opt['kept'],
-                        service_times=service_times,
-                        geocoded=geocoded,
-                        depot_address=depot_address,
-                        valid_orders=valid_orders_display,
-                        addresses=addresses,
-                        time_matrix=time_matrix,
-                        vehicle_capacity=vehicle_capacity,
-                        window_minutes=window_minutes,
-                        strategy_desc=opt.get('strategy', 'Dispatcher Sandbox'),
-                        show_ai_explanations=False
-                    )
-
+                        display_optimization_results(
+                            keep=opt['keep'],
+                            early=opt['early'],
+                            reschedule=opt['reschedule'],
+                            cancel=opt['cancel'],
+                            kept=opt['kept'],
+                            service_times=service_times,
+                            geocoded=geocoded,
+                            depot_address=depot_address,
+                            valid_orders=valid_orders_display,
+                            addresses=addresses,
+                            time_matrix=time_matrix,
+                            vehicle_capacity=vehicle_capacity,
+                            window_minutes=window_minutes,
+                            strategy_desc=opt['strategy'],
+                            show_ai_explanations=False
+                        )
             # Display stored Full day results (when not running optimization but results exist in session state)
             if valid_orders and not run_optimization and mode == "Full day" and 'full_day_results' in st.session_state and st.session_state.full_day_results:
                 try:

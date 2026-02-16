@@ -82,6 +82,24 @@ After optimization, you can ask Claude questions about the route:
    streamlit run app.py
    ```
 
+### Optional: Disable Authentication (Development Only)
+
+For local development, you can bypass password authentication:
+
+1. **Add to .env File**:
+   ```env
+   REQUIRE_AUTH=false
+   ```
+
+2. **Restart the App**:
+   ```bash
+   streamlit run app.py
+   ```
+
+**⚠️ Security Warning**: Only use this in local development environments. Never disable authentication in shared or production deployments.
+
+---
+
 ### Running Optimization
 
 The app now has a simplified interface with **one button** and a **test mode toggle**:
@@ -577,12 +595,12 @@ The app has been significantly improved with a unified, consistent user experien
 - ✅ Clear AI status indicators
 
 **Enhanced Maps**:
-- ✅ Multi-window now uses Google Maps polylines (actual road routes)
+- ✅ Multiple Windows mode now uses Google Maps polylines (actual road routes)
 - ✅ Numbered stop markers in all views
-- ✅ Consistent map quality between single and multi-window modes
+- ✅ Consistent map quality between single and multiple window modes
 - ✅ Rich tooltips with window assignments
 
-**Multi-Window Improvements**:
+**Multiple Windows Improvements**:
 - ✅ Per-window KPI dashboards (orders, capacity, time, efficiency)
 - ✅ Individual window maps in expanders
 - ✅ AI validation per window (when enabled)

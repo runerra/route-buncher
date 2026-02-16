@@ -78,7 +78,7 @@ def get_default_depot() -> str:
     Returns:
         str: Depot address
     """
-    return get_secret("DEPOT_ADDRESS", "Meijer Plymouth MN")
+    return get_secret("DEPOT_ADDRESS", "3710 Dix Hwy Lincoln Park, MI 48146")
 
 
 def get_default_capacity() -> int:
@@ -88,11 +88,11 @@ def get_default_capacity() -> int:
     Returns:
         int: Vehicle capacity in units
     """
-    capacity_str = get_secret("DEFAULT_VEHICLE_CAPACITY", "80")
+    capacity_str = get_secret("DEFAULT_VEHICLE_CAPACITY", "300")
     try:
         return int(capacity_str)
     except ValueError:
-        return 80
+        return 300
 
 
 def get_anthropic_api_key() -> str:
@@ -119,6 +119,20 @@ def get_app_password() -> str:
         If not set, defaults to "spaceCowboy"
     """
     return get_secret("APP_PASSWORD", "spaceCowboy")
+
+
+def is_auth_required() -> bool:
+    """
+    Check if authentication is required for the app.
+
+    Controlled by REQUIRE_AUTH environment variable.
+    Set to 'false' in .env to disable authentication during local development.
+
+    Returns:
+        bool: True if authentication required (default), False to skip auth
+    """
+    require_auth = get_secret("REQUIRE_AUTH", "true")
+    return require_auth.lower() not in ["false", "0", "no", "off"]
 
 
 # Runtime test mode override (can be set from UI)
