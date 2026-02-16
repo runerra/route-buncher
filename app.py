@@ -647,6 +647,20 @@ def main():
     # Sidebar configuration
     st.sidebar.header("Configuration")
 
+    # Test mode toggle
+    test_mode = st.sidebar.toggle(
+        "🧪 Test Mode (Skip Maps API)",
+        value=config.is_test_mode(),
+        help="Enable to use mock geocoding and estimated distances instead of real Google Maps API calls. Saves costs during UX testing."
+    )
+
+    # Update test mode in config
+    config.set_test_mode(test_mode)
+
+    # Show info banner when test mode is enabled
+    if test_mode:
+        st.sidebar.info("🧪 **Test Mode Active**: Using mock location data. Routes may not reflect real drive times.")
+
     depot_address = st.sidebar.text_input(
         "Fulfillment Location",
         value=config.get_default_depot(),

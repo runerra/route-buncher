@@ -4,13 +4,186 @@ Geocoding and distance matrix functionality using Google Maps API.
 
 from typing import List, Dict, Optional, Tuple
 import googlemaps
-from config import get_google_maps_client
+from config import get_google_maps_client, is_test_mode
 import polyline
+import random
+import math
 
+
+# ============================================================================
+# MOCK FUNCTIONS FOR TEST MODE (bypass Google Maps API)
+# ============================================================================
+
+def _mock_geocode_addresses(addresses: List[str]) -> List[Dict[str, any]]:
+    """
+    Generate mock geocoded addresses for testing without API calls.
+
+    Creates random coordinates in a ~20km x 20km area centered around a base point.
+    This simulates a realistic delivery area without calling the Geocoding API.
+
+    Args:
+        addresses: List of address strings
+
+    Returns:
+        List of dicts with mock lat/lng coordinates
+    """
+    # Base coordinates (Minneapolis/St. Paul area as example)
+    base_lat = 44.9778
+    base_lng = -93.2650
+
+    # Seed random with address hash for consistency
+    results = []
+    for i, address in enumerate(addresses):
+        # Create deterministic but pseudo-random coordinates
+        # Use address hash for consistent results per address
+        seed = hash(address) % 10000
+        random.seed(seed + i)
+
+        # Spread addresses within ~20km radius
+        # 0.1 degrees ≈ 11km at this latitude
+        lat_offset = random.uniform(-0.1, 0.1)
+        lng_offset = random.uniform(-0.1, 0.1)
+
+        results.append({
+            "address": address,
+            "lat": base_lat + lat_offset,
+            "lng": base_lng + lng_offset
+        })
+
+    return results
+
+
+def _calculate_distance(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """
+    Calculate approximate distance in kilometers using Haversine formula.
+
+    Args:
+        lat1, lng1: First point coordinates
+        lat2, lng2: Second point coordinates
+
+    Returns:
+        Distance in kilometers
+    """
+    # Earth radius in km
+    R = 6371.0
+
+    # Convert to radians
+    lat1_rad = math.radians(lat1)
+    lat2_rad = math.radians(lat2)
+    dlat = math.radians(lat2 - lat1)
+    dlng = math.radians(lng2 - lng1)
+
+    # Haversine formula
+    a = math.sin(dlat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlng / 2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    return R * c
+
+
+def _mock_build_time_matrix(addresses: List[str]) -> List[List[int]]:
+    """
+    Build mock time matrix using straight-line distances for testing.
+
+    Estimates drive time based on Euclidean distance with an average speed factor.
+    This avoids calling the Distance Matrix API while still providing reasonable data.
+
+    Args:
+        addresses: List of addresses
+
+    Returns:
+        N x N matrix of estimated travel times in minutes
+    """
+    # First, mock geocode to get coordinates
+    geocoded = _mock_geocode_addresses(addresses)
+
+    n = len(addresses)
+    time_matrix = [[0 for _ in range(n)] for _ in range(n)]
+
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                time_matrix[i][j] = 0
+            else:
+                # Calculate straight-line distance
+                lat1, lng1 = geocoded[i]["lat"], geocoded[i]["lng"]
+                lat2, lng2 = geocoded[j]["lat"], geocoded[j]["lng"]
+
+                distance_km = _calculate_distance(lat1, lng1, lat2, lng2)
+
+                # Estimate time: assume 30 km/h average (accounts for city driving, turns, etc.)
+                # This is conservative compared to highway speeds
+                time_hours = distance_km / 30.0
+                time_minutes = int(time_hours * 60)
+
+                # Add small random variation (±20%) to make it more realistic
+                seed = hash(f"{i}-{j}") % 1000
+                random.seed(seed)
+                variation = random.uniform(0.8, 1.2)
+                time_minutes = int(time_minutes * variation)
+
+                # Minimum 1 minute even for very close addresses
+                time_matrix[i][j] = max(1, time_minutes)
+
+    return time_matrix
+
+
+def _mock_get_route_polylines(addresses: List[str], waypoint_order: List[int]) -> List[Tuple[float, float]]:
+    """
+    Generate mock route polylines by connecting points with straight lines.
+
+    Instead of calling Directions API, this simply draws straight lines between
+    waypoints for visualization purposes during testing.
+
+    Args:
+        addresses: List of addresses
+        waypoint_order: Order to visit addresses
+
+    Returns:
+        List of (lat, lng) tuples forming straight-line route
+    """
+    if len(waypoint_order) < 2:
+        return []
+
+    # Mock geocode to get coordinates
+    geocoded = _mock_geocode_addresses(addresses)
+
+    route_coords = []
+
+    # Connect each pair of consecutive waypoints with a straight line
+    for i in range(len(waypoint_order) - 1):
+        from_idx = waypoint_order[i]
+        to_idx = waypoint_order[i + 1]
+
+        from_lat = geocoded[from_idx]["lat"]
+        from_lng = geocoded[from_idx]["lng"]
+        to_lat = geocoded[to_idx]["lat"]
+        to_lng = geocoded[to_idx]["lng"]
+
+        # Add start point
+        route_coords.append((from_lat, from_lng))
+
+        # Add intermediate points for smoother line (5 points between each pair)
+        for j in range(1, 5):
+            interp_lat = from_lat + (to_lat - from_lat) * (j / 5.0)
+            interp_lng = from_lng + (to_lng - from_lng) * (j / 5.0)
+            route_coords.append((interp_lat, interp_lng))
+
+    # Add final destination
+    final_idx = waypoint_order[-1]
+    route_coords.append((geocoded[final_idx]["lat"], geocoded[final_idx]["lng"]))
+
+    return route_coords
+
+
+# ============================================================================
+# MAIN API FUNCTIONS (with test mode support)
+# ============================================================================
 
 def geocode_addresses(addresses: List[str]) -> List[Dict[str, any]]:
     """
     Geocode a list of addresses using Google Maps Geocoding API.
+
+    In test mode, uses mock geocoding to avoid API costs.
 
     Args:
         addresses: List of address strings to geocode
@@ -25,6 +198,11 @@ def geocode_addresses(addresses: List[str]) -> List[Dict[str, any]]:
             {"address": "Invalid", "lat": None, "lng": None}
         ]
     """
+    # Use mock data in test mode
+    if is_test_mode():
+        return _mock_geocode_addresses(addresses)
+
+    # Real API call
     client = get_google_maps_client()
     results = []
 
@@ -61,6 +239,9 @@ def build_time_matrix(addresses: List[str]) -> List[List[int]]:
     """
     Build a time matrix (in minutes) between all addresses using Distance Matrix API.
 
+    In test mode, uses estimated distances based on straight-line calculations
+    to avoid API costs.
+
     The matrix is N x N where N = len(addresses).
     Matrix[i][j] represents travel time in minutes from address i to address j.
 
@@ -77,6 +258,11 @@ def build_time_matrix(addresses: List[str]) -> List[List[int]]:
         - Max 10 destinations per request
         We batch requests accordingly.
     """
+    # Use mock data in test mode
+    if is_test_mode():
+        return _mock_build_time_matrix(addresses)
+
+    # Real API call
     client = get_google_maps_client()
     n = len(addresses)
     time_matrix = [[9999 for _ in range(n)] for _ in range(n)]
@@ -130,6 +316,8 @@ def get_route_polylines(addresses: List[str], waypoint_order: List[int]) -> List
     """
     Get actual driving route polylines showing roads between stops.
 
+    In test mode, returns straight lines between waypoints to avoid API costs.
+
     Uses Google Directions API to get turn-by-turn directions and decode the polyline
     to show the actual roads the driver will take.
 
@@ -145,6 +333,11 @@ def get_route_polylines(addresses: List[str], waypoint_order: List[int]) -> List
         This makes one Directions API call for the entire route.
         The API can handle up to 25 waypoints per request.
     """
+    # Use mock data in test mode
+    if is_test_mode():
+        return _mock_get_route_polylines(addresses, waypoint_order)
+
+    # Real API call
     client = get_google_maps_client()
 
     if len(waypoint_order) < 2:

@@ -121,6 +121,21 @@ def get_app_password() -> str:
     return get_secret("APP_PASSWORD", "spaceCowboy")
 
 
+# Runtime test mode override (can be set from UI)
+_test_mode_override = None
+
+
+def set_test_mode(enabled: bool):
+    """
+    Set test mode at runtime (overrides environment variable).
+
+    Args:
+        enabled: True to enable test mode, False to disable
+    """
+    global _test_mode_override
+    _test_mode_override = enabled
+
+
 def get_default_service_time_method() -> str:
     """
     Get the default service time calculation method.
@@ -144,3 +159,24 @@ def get_default_fixed_service_time() -> int:
         return int(time_str)
     except ValueError:
         return 3
+
+
+def is_test_mode() -> bool:
+    """
+    Check if test mode is enabled (bypasses Google Maps API calls).
+
+    Test mode uses mock geocoding and estimated distances instead of real API calls,
+    which is useful for development and UX testing without incurring API costs.
+
+    Returns:
+        bool: True if test mode is enabled (default), False otherwise
+    """
+    global _test_mode_override
+
+    # Check runtime override first (set from UI)
+    if _test_mode_override is not None:
+        return _test_mode_override
+
+    # Fall back to environment variable
+    test_mode = get_secret("TEST_MODE", "true")
+    return test_mode.lower() in ["true", "1", "yes", "on"]
