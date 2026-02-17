@@ -44,6 +44,39 @@ def extract_all_csv_fields(order: Dict) -> Dict:
     return csv_fields
 
 
+def create_standard_row(order: Dict) -> Dict:
+    """
+    Create a standardized row dictionary with the 7 key fields in order:
+    1. externalOrderId
+    2. customerID
+    3. address
+    4. customerTag
+    5. numberOfUnits
+    6. earlyEligible
+    7. deliveryWindow
+    """
+    # Format delivery window
+    delivery_window = ""
+    if "delivery_window_start" in order and "delivery_window_end" in order:
+        start = order["delivery_window_start"]
+        end = order["delivery_window_end"]
+        if hasattr(start, 'strftime') and hasattr(end, 'strftime'):
+            delivery_window = f"{start.strftime('%I:%M %p')} {end.strftime('%I:%M %p')}"
+
+    # Build row in exact order
+    row = {
+        "externalOrderId": order.get("order_id", ""),
+        "customerID": order.get("customer_name", ""),
+        "address": order.get("delivery_address", ""),
+        "customerTag": order.get("customerTag", ""),
+        "numberOfUnits": order.get("units", 0),
+        "earlyEligible": "true" if order.get("early_delivery_ok", False) else "false",
+        "deliveryWindow": delivery_window
+    }
+
+    return row
+
+
 def _initialize_folium_map(center_lat, center_lon, use_google_tiles=True):
     """
     Initialize a Folium map with specified center and tile provider.
@@ -684,18 +717,9 @@ def display_optimization_results(keep, early, reschedule, cancel, kept, service_
     if keep:
         keep_data = []
         for k in sorted(keep, key=lambda x: x["sequence_index"]):
-            # Start with key display fields
-            row = {
-                "Seq": k["sequence_index"] + 1,
-                "externalOrderId": k["order_id"],
-                "customerID": k["customer_name"],
-                "address": k["delivery_address"],
-                "numberOfUnits": k["units"]
-            }
-
-            # Add all original CSV fields
-            csv_fields = extract_all_csv_fields(k)
-            row.update(csv_fields)
+            # Create row with standard 7 fields
+            row = {"Seq": k["sequence_index"] + 1}
+            row.update(create_standard_row(k))
 
             # Add optimizer-computed fields at the end
             row["Score"] = f"{k.get('optimal_score', 0)}/100"
@@ -718,17 +742,8 @@ def display_optimization_results(keep, early, reschedule, cancel, kept, service_
     if early:
         early_data = []
         for e in early:
-            # Start with key display fields
-            row = {
-                "externalOrderId": e["order_id"],
-                "customerID": e["customer_name"],
-                "address": e["delivery_address"],
-                "numberOfUnits": e["units"]
-            }
-
-            # Add all original CSV fields
-            csv_fields = extract_all_csv_fields(e)
-            row.update(csv_fields)
+            # Create row with standard 7 fields
+            row = create_standard_row(e)
 
             # Add optimizer-computed fields at the end
             row["Score"] = f"{e.get('optimal_score', 0)}/100"
@@ -749,18 +764,9 @@ def display_optimization_results(keep, early, reschedule, cancel, kept, service_
     excluded_orders = []
 
     for r in reschedule:
-        # Start with key display fields
-        row = {
-            "Action": "📅 RESCHEDULE",
-            "externalOrderId": r["order_id"],
-            "customerID": r["customer_name"],
-            "address": r["delivery_address"],
-            "numberOfUnits": r["units"]
-        }
-
-        # Add all original CSV fields
-        csv_fields = extract_all_csv_fields(r)
-        row.update(csv_fields)
+        # Create row with Action + standard 7 fields
+        row = {"Action": "📅 RESCHEDULE"}
+        row.update(create_standard_row(r))
 
         # Add optimizer-computed fields at the end
         row["Score"] = f"{r.get('optimal_score', 0)}/100"
@@ -772,18 +778,9 @@ def display_optimization_results(keep, early, reschedule, cancel, kept, service_
         excluded_orders.append(row)
 
     for c in cancel:
-        # Start with key display fields
-        row = {
-            "Action": "❌ CANCEL",
-            "externalOrderId": c["order_id"],
-            "customerID": c["customer_name"],
-            "address": c["delivery_address"],
-            "numberOfUnits": c["units"]
-        }
-
-        # Add all original CSV fields
-        csv_fields = extract_all_csv_fields(c)
-        row.update(csv_fields)
+        # Create row with Action + standard 7 fields
+        row = {"Action": "❌ CANCEL"}
+        row.update(create_standard_row(c))
 
         # Add optimizer-computed fields at the end
         row["Score"] = f"{c.get('optimal_score', 0)}/100"
@@ -837,7 +834,7 @@ def check_password() -> bool:
     # Create a form for password entry
     with st.form("login_form"):
         password = st.text_input("Password", type="password", key="password_input")
-        submit = st.form_submit_button("Login", type="primary", use_container_width=True)
+        submit = st.form_submit_button("Login", type="primary", width='stretch')
 
         if submit:
             if password == correct_password:
@@ -882,148 +879,287 @@ def main():
     Upload a CSV of orders to see which orders to keep, deliver early, reschedule, or cancel.
     """)
 
-    # Sidebar configuration
-    st.sidebar.header("Configuration")
+    # ============================================================================
+    # SIDEBAR: Progressive Reveal Workflow
+    # ============================================================================
+    st.sidebar.header("🚐 Buncher Workflow")
 
-    # Test mode toggle
-    test_mode = st.sidebar.toggle(
-        "🧪 Test Mode (Skip API Calls)",
-        value=config.is_test_mode(),
-        help="Enable to bypass Maps API and AI API for cost-free testing. Uses mock geocoding and generic AI responses."
-    )
-
-    # Update test mode in config
-    config.set_test_mode(test_mode)
-
-    # Show info banner when test mode is enabled
-    if test_mode:
-        st.sidebar.warning("⚠️ **Test Mode Active**: Using mock data for Maps and AI. Routes and explanations are generic.")
-
-    depot_address = st.sidebar.text_input(
-        "Fulfillment Location",
-        value=config.get_default_depot(),
-        help="Starting location for deliveries"
-    )
-
-    vehicle_capacity = st.sidebar.number_input(
-        "Vehicle Capacity (units)",
-        min_value=50,
-        max_value=500,
-        value=config.get_default_capacity(),
-        step=50,
-        help="Maximum number of units the vehicle can carry"
-    )
-
-    window_override = st.sidebar.number_input(
-        "Window Length Override (minutes)",
-        min_value=0,
-        max_value=240,
-        value=0,
-        step=15,
-        help="Override delivery window length from CSV (0 = use CSV value). Useful when actual window is shorter than planned."
-    )
-
-    # Service time configuration
-    # Get default method from config
-    default_method = config.get_default_service_time_method()
-    default_index = 0 if default_method == "smart" else 1
-
-    service_time_method = st.sidebar.radio(
-        "Service Time Method",
-        options=["Smart (Variable by Units)", "Fixed (Same for All Stops)"],
-        index=default_index,
-        help="Choose how to calculate service time at each stop"
-    )
-
-    if service_time_method == "Fixed (Same for All Stops)":
-        fixed_service_time = st.sidebar.number_input(
-            "Minutes per Stop",
-            min_value=1,
-            max_value=15,
-            value=config.get_default_fixed_service_time(),
-            step=1,
-            help="Fixed service time applied to every stop"
-        )
-    else:
-        # Smart service time - show info about the logic
-        with st.sidebar.expander("ℹ️ How Smart Service Time Works"):
-            st.markdown("""
-            **Smart service time** calculates time based on order size using real operational data:
-
-            **Formula**: `time = 1.6 + (units^1.3) × 0.045`
-
-            **Examples**:
-            - 2-10 units → 2-3 minutes *(small orders)*
-            - 18-25 units → 3-5 minutes *(typical orders)*
-            - 30-40 units → 5-7 minutes *(large orders)*
-
-            **Why it works**:
-            - Larger orders take disproportionately more time
-            - Reflects actual unloading patterns
-            - Power curve (^1.3) captures efficiency loss at scale
-            - Capped at 7 minutes maximum
-
-            **When to use**:
-            - ✅ Variable order sizes (mix of small and large)
-            - ✅ Want realistic time estimates
-            - ✅ Typical grocery/retail delivery
-
-            **When to use Fixed instead**:
-            - Orders are all similar size
-            - You have exact timing data
-            - Simplicity preferred over accuracy
-            """)
-        fixed_service_time = None  # Not used in smart mode
-
-    # File upload
-    st.sidebar.markdown("---")
-    st.sidebar.header("Upload Orders")
+    # -------------------------------------------------------------------------
+    # STEP 1: Upload Orders (Always Visible)
+    # -------------------------------------------------------------------------
+    st.sidebar.markdown("### 📤 Step 1: Upload Orders")
     uploaded_file = st.sidebar.file_uploader(
-        "Choose a CSV file",
+        "Upload CSV file",
         type=["csv"],
-        help="Upload CSV with order data"
+        help="Upload CSV with order data in the expected format"
     )
 
-    # Order status filter (for new CSV format with orderStatus field)
-    status_filter = st.sidebar.multiselect(
-        "Filter by Order Status",
-        options=["delivered", "cancelled"],
-        default=["delivered", "cancelled"],
-        help="Select which order statuses to include (used for audit purposes)"
-    )
+    if uploaded_file:
+        st.sidebar.success(f"✅ {uploaded_file.name}")
 
-    # Random sample button
-    if st.sidebar.button("🎲 Generate Random Sample", use_container_width=True, help="Generate random orders for testing", type="primary"):
-        # Set flag to show parameter questions
-        st.session_state.show_random_sample_questions = True
-        st.rerun()
+    # Initialize variables for progressive reveal
+    orders = None
+    window_minutes = None
+    depot_address = None
+    location_verified = False
+    mode = None
 
-    # Optimization scenario selection (for One Window mode)
+    # Parse CSV if uploaded
+    if uploaded_file:
+        try:
+            orders, window_minutes = parser.parse_csv(uploaded_file)
+        except Exception as e:
+            st.sidebar.error(f"❌ Error parsing CSV: {str(e)}")
+            orders = None
+            window_minutes = None
+
+    # -------------------------------------------------------------------------
+    # STEP 2: Verify Location (Hidden Until CSV Uploaded)
+    # -------------------------------------------------------------------------
+    if uploaded_file and orders:
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### 📍 Step 2: Verify Location")
+
+        # Auto-detect from CSV
+        depot_address_from_csv = None
+        if orders and 'fulfillmentLocationAddress' in orders[0]:
+            depot_address_from_csv = orders[0]['fulfillmentLocationAddress']
+
+        if depot_address_from_csv and depot_address_from_csv.strip():
+            depot_address = depot_address_from_csv.strip()
+            st.sidebar.success(f"✅ Auto-detected: {depot_address}")
+            location_verified = True
+        else:
+            # Manual input if not in CSV
+            depot_address = st.sidebar.text_input(
+                "Fulfillment Location",
+                value=config.get_default_depot(),
+                help="Enter depot address or it will be auto-detected from CSV",
+                key="depot_address_input"
+            )
+            location_verified = bool(depot_address and depot_address.strip())
+
+    # -------------------------------------------------------------------------
+    # STEP 3: Select Mode (Hidden Until Location Verified)
+    # -------------------------------------------------------------------------
+    if location_verified:
+        st.sidebar.markdown("---")
+        st.sidebar.markdown("### ⚙️ Step 3: Select Optimization Mode")
+
+        mode = st.sidebar.radio(
+            "Choose mode:",
+            ["One Window", "Multiple Windows"],
+            index=1,  # Default to Multiple Windows
+            help="One Window: optimize a single delivery window. Multiple Windows: allocate orders across multiple windows.",
+            key="mode_selector"
+        )
+
+    # -------------------------------------------------------------------------
+    # STEP 4: Mode-Specific Configuration (Under Mode Selector)
+    # -------------------------------------------------------------------------
+    selected_window = None
+    window_capacities = {}
+    vehicle_capacity = config.get_default_capacity()
+    enable_cut2 = False
+    enable_cut3 = False
+    honor_priority = False
+    cancel_threshold = 80
+    reschedule_threshold = 40
+
+    if mode == "One Window" and orders:
+        st.sidebar.markdown("#### One Window Settings")
+
+        # Detect unique delivery windows
+        unique_windows = set()
+        for o in orders:
+            unique_windows.add((o['delivery_window_start'], o['delivery_window_end']))
+        sorted_windows = sorted(list(unique_windows))
+
+        # Create window labels
+        window_labels_list = []
+        for win_start, win_end in sorted_windows:
+            label = f"{win_start.strftime('%I:%M %p')} - {win_end.strftime('%I:%M %p')}"
+            window_labels_list.append(label)
+
+        # Delivery window selector
+        if window_labels_list:
+            selected_window_label = st.sidebar.selectbox(
+                "Delivery window:",
+                window_labels_list,
+                help="Select the delivery window to optimize",
+                key="window_selector"
+            )
+
+            # Find the corresponding window tuple
+            selected_window_index = window_labels_list.index(selected_window_label)
+            selected_window = sorted_windows[selected_window_index]
+
+        # Vehicle capacity
+        vehicle_capacity = st.sidebar.number_input(
+            "Vehicle capacity (units):",
+            min_value=50,
+            max_value=500,
+            value=config.get_default_capacity(),
+            step=10,
+            help="Maximum units this vehicle can carry",
+            key="vehicle_capacity_input"
+        )
+
+        # Cut selection
+        st.sidebar.markdown("**Optimization Scenarios:**")
+        st.sidebar.checkbox(
+            "✅ Cut 1: Max Orders",
+            value=True,
+            disabled=True,
+            key="enable_cut1",
+            help="Always enabled - maximizes number of orders served"
+        )
+        enable_cut2 = st.sidebar.checkbox(
+            "Cut 2: Shortest Route",
+            value=False,
+            key="enable_cut2",
+            help="Optional - optimizes for shortest total distance"
+        )
+        enable_cut3 = st.sidebar.checkbox(
+            "Cut 3: High Density",
+            value=False,
+            key="enable_cut3",
+            help="Optional - maximizes deliveries per hour in dense clusters"
+        )
+
+    elif mode == "Multiple Windows" and orders:
+        st.sidebar.markdown("#### Multi-Window Settings")
+
+        # Allocation controls
+        honor_priority = st.sidebar.checkbox(
+            "Lock priority customers to preferred windows",
+            value=False,
+            key="honor_priority",
+            help="If enabled, priority customers stay in their requested windows"
+        )
+
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            cancel_threshold = st.number_input(
+                "Auto-cancel threshold (units):",
+                min_value=0,
+                value=80,
+                help="Orders with > X units are auto-cancelled if they don't fit",
+                key="cancel_threshold"
+            )
+        with col2:
+            reschedule_threshold = st.number_input(
+                "Auto-reschedule threshold (units):",
+                min_value=0,
+                value=40,
+                help="Orders with > X units can be rescheduled to adjacent windows",
+                key="reschedule_threshold"
+            )
+
+        # Note: Capacity configuration will happen in main window
+        # as it requires a data_editor which is too large for sidebar
+        st.sidebar.info("💡 Configure capacity per window in the main area below")
+
+    # -------------------------------------------------------------------------
+    # STEP 5: Advanced Configuration (Bottom of Sidebar)
+    # -------------------------------------------------------------------------
+    fixed_service_time = None
+    test_mode = False
+
+    if location_verified and mode:
+        st.sidebar.markdown("---")
+
+        with st.sidebar.expander("🔧 Advanced Configuration", expanded=False):
+            # Service time method
+            default_method = config.get_default_service_time_method()
+            default_index = 0 if default_method == "smart" else 1
+
+            service_time_method = st.radio(
+                "Service time method:",
+                ["Smart (Variable by Units)", "Fixed (Same for All Stops)"],
+                index=default_index,
+                help="Smart adjusts time based on order size. Fixed uses same time for all stops.",
+                key="service_time_method"
+            )
+
+            if service_time_method == "Fixed (Same for All Stops)":
+                fixed_service_time = st.number_input(
+                    "Service time per stop (minutes):",
+                    min_value=1,
+                    max_value=20,
+                    value=config.get_default_fixed_service_time(),
+                    step=1,
+                    key="fixed_service_time_input"
+                )
+
+            # Test mode toggle
+            test_mode = st.checkbox(
+                "🧪 Test Mode (Skip APIs)",
+                value=config.is_test_mode(),
+                key="test_mode_toggle",
+                help="Enable to use mock data and skip API calls (zero cost)"
+            )
+            config.set_test_mode(test_mode)
+
+            if test_mode:
+                st.warning("⚠️ Test Mode: Using mock data")
+
+    # -------------------------------------------------------------------------
+    # RUN OPTIMIZATION BUTTON (Always Visible, Conditionally Enabled)
+    # -------------------------------------------------------------------------
     st.sidebar.markdown("---")
-    st.sidebar.markdown("**🎯 Optimization Scenarios**")
-    st.sidebar.caption("Choose which cuts to run. Cut 1 is always included.")
 
-    st.sidebar.checkbox(
-        "✅ Cut 1: Max Orders (Recommended)",
-        value=True,
-        disabled=True,
-        help="Always runs - maximizes number of orders delivered",
-        key="enable_cut1"
-    )
+    # AI status indicator
+    use_ai = config.is_ai_enabled()
+    if use_ai:
+        st.sidebar.success("✅ **AI Features Enabled**")
+    elif not test_mode:
+        st.sidebar.info("ℹ️ **AI Disabled** (No API key)")
 
-    enable_cut2 = st.sidebar.checkbox(
-        "Cut 2: Shortest Route (Optional)",
-        value=False,
-        help="Selects most efficient orders and optimizes for shortest route",
-        key="enable_cut2"
-    )
+    # Check if all requirements met
+    can_run = bool(uploaded_file and orders and location_verified and mode)
 
-    enable_cut3 = st.sidebar.checkbox(
-        "Cut 3: High Density (Optional)",
-        value=False,
-        help="Maximizes deliveries per hour by selecting tightly clustered orders",
-        key="enable_cut3"
-    )
+    if not can_run:
+        # Show specific blocking reason
+        if not uploaded_file:
+            helper_text = "⚠️ Upload a CSV to continue"
+        elif not orders:
+            helper_text = "⚠️ Error parsing CSV"
+        elif not location_verified:
+            helper_text = "⚠️ Verify fulfillment location to continue"
+        elif not mode:
+            helper_text = "⚠️ Select optimization mode to continue"
+        else:
+            helper_text = ""
+
+        st.sidebar.button(
+            "🚀 Run Optimization",
+            type="primary",
+            width='stretch',
+            disabled=True,
+            key="run_disabled"
+        )
+        if helper_text:
+            st.sidebar.caption(helper_text)
+
+        run_optimization = False
+    else:
+        run_optimization = st.sidebar.button(
+            "🚀 Run Optimization",
+            type="primary",
+            width='stretch',
+            key="run_enabled"
+        )
+
+    # Clear old results when starting new optimization
+    if run_optimization:
+        st.session_state.optimization_results = None
+        st.session_state.full_day_results = None
+        st.session_state.optimization_context = None
+        st.session_state.chat_messages = []
+        st.session_state.optimization_complete = True  # Set flag for order preview editability
+        use_ai = config.is_ai_enabled()
+        st.session_state.use_ai = use_ai
 
     # Handle random sample generation with interactive form
     if st.session_state.get('show_random_sample_questions', False):
@@ -1071,9 +1207,9 @@ def main():
 
             col1, col2 = st.columns(2)
             with col1:
-                generate_btn = st.form_submit_button("✅ Generate", type="primary", use_container_width=True)
+                generate_btn = st.form_submit_button("✅ Generate", type="primary", width='stretch')
             with col2:
-                cancel_btn = st.form_submit_button("❌ Cancel", use_container_width=True)
+                cancel_btn = st.form_submit_button("❌ Cancel", width='stretch')
 
             if cancel_btn:
                 st.session_state.show_random_sample_questions = False
@@ -1216,28 +1352,6 @@ def main():
         uploaded_file = BytesIO(st.session_state.sample_file_content)
         uploaded_file.name = "random_sample.csv"
 
-    # AI status indicator
-    use_ai = config.is_ai_enabled()
-    if use_ai:
-        st.sidebar.success("✅ **AI Features Enabled**")
-    elif not test_mode:
-        st.sidebar.info("ℹ️ **AI Disabled** (No API key)")
-
-    # Single run button
-    run_optimization = st.sidebar.button(
-        "🚀 Run Optimization",
-        type="primary",
-        use_container_width=True
-    )
-
-    # Clear old results when starting new optimization
-    if run_optimization:
-        st.session_state.optimization_results = None
-        st.session_state.full_day_results = None
-        st.session_state.optimization_context = None
-        st.session_state.chat_messages = []
-        st.session_state.use_ai = use_ai  # Store AI preference
-
     # AI Chat Assistant in sidebar (appears after optimization)
     if "optimization_results" in st.session_state and st.session_state.optimization_results:
         st.sidebar.markdown("---")
@@ -1265,34 +1379,11 @@ def main():
         if st.session_state.waiting_for_ai_response:
             api_key = config.get_anthropic_api_key()
 
-            # Get sandbox data and other parameters for tool calling
-            results = st.session_state.optimization_results
-            if results:
-                sandbox_data = results['optimizations'].get('sandbox', {})
-                valid_orders = results.get('valid_orders', [])
-                time_matrix = results.get('time_matrix', [])
-                vehicle_capacity = results.get('vehicle_capacity', 80)
-                window_minutes = results.get('window_minutes', 120)
-                service_times = results.get('service_times', [])
-            else:
-                sandbox_data = None
-                valid_orders = None
-                time_matrix = None
-                vehicle_capacity = None
-                window_minutes = None
-                service_times = None
-
             with st.spinner("AI is thinking..."):
-                response, updated_sandbox, tool_executions = chat_assistant.chat_with_assistant(
+                response = chat_assistant.chat_with_assistant(
                     st.session_state.chat_messages,
                     st.session_state.optimization_context,
-                    api_key,
-                    sandbox_data=None,  # Dispatcher Sandbox removed
-                    valid_orders=valid_orders,
-                    time_matrix=time_matrix,
-                    vehicle_capacity=vehicle_capacity,
-                    window_minutes=window_minutes,
-                    service_times=service_times
+                    api_key
                 )
 
             # Add AI response
@@ -1307,85 +1398,81 @@ def main():
             st.session_state.waiting_for_ai_response = True
             st.rerun()
 
-    # Main area
-    if uploaded_file is None and not st.session_state.manual_orders:
-        st.info("👈 Upload a CSV file or add orders manually to get started")
+    # ============================================================================
+    # MAIN WINDOW: Display Sample Data or Results
+    # ============================================================================
 
-        st.subheader("Expected CSV Format")
+    # BEFORE CSV UPLOAD: Show sample data and template
+    if not uploaded_file:
+        st.markdown("Upload a CSV file in the sidebar to begin optimizing delivery routes.")
+
+        st.markdown("---")
+        st.subheader("📋 Sample CSV Format")
+        st.markdown("Your CSV should include these columns (new format):")
+
+        # Show sample data matching actual new format from parser.py
+        sample_df = pd.DataFrame({
+            'externalOrderId': ['ORD-70592', 'ORD-70593', 'ORD-70594'],
+            'customerID': ['CUST-001', 'CUST-002', 'CUST-003'],
+            'address': [
+                '123 Main St, Detroit, MI 48201',
+                '456 Oak Ave, Detroit, MI 48202',
+                '789 Elm St, Detroit, MI 48203'
+            ],
+            'customerTag': ['priority', 'regular', 'regular'],
+            'numberOfUnits': [25, 30, 15],
+            'earlyEligible': [True, False, True],
+            'deliveryWindow': [
+                '09:00 AM 11:00 AM',
+                '09:00 AM 11:00 AM',
+                '01:00 PM 03:00 PM'
+            ]
+        })
+        st.dataframe(sample_df, width='stretch')
+
         st.markdown("""
-        Your CSV should have the following columns (exact names required):
+        **Required columns:**
+        - `externalOrderId` - Unique order identifier
+        - `customerID` - Customer identifier
+        - `address` - Full delivery address
+        - `customerTag`
+        - `numberOfUnits` - Number of units/totes
+        - `earlyEligible` - Can deliver early? (True/False)
+        - `deliveryWindow` - Time window (format: "HH:MM AM HH:MM PM")
 
-        - `orderID` - Unique order identifier
-        - `customer_name` - Customer name
-        - `delivery_address` - Full delivery address
-        - `number_of_units` - Number of units to deliver
-        - `early_ok` - "Yes" or "No" (whether early delivery is allowed)
-        - `delivery_window_start` - Start time (e.g., "09:00 AM")
-        - `delivery_window_end` - End time (e.g., "11:00 AM")
+        **Optional columns:**
+        - `orderId`, `runId`, `orderStatus`, `deliveryDate`,
+          `priorRescheduleCount`, `fulfillmentLocation`, `fulfillmentGeo`,
+          `fulfillmentLocationAddress`, `extendedCutOffTime`
         """)
 
-        st.subheader("Example CSV")
-        example_df = pd.DataFrame([
-            {
-                "orderID": "70509",
-                "customer_name": "Michael Tomaszewski",
-                "delivery_address": "6178 Gulley St Taylor 48180",
-                "number_of_units": 2,
-                "early_ok": "No",
-                "delivery_window_start": "09:00 AM",
-                "delivery_window_end": "11:00 AM"
-            },
-            {
-                "orderID": "70592",
-                "customer_name": "Gabriel Carrion",
-                "delivery_address": "3522 Linden Street Dearborn 48124",
-                "number_of_units": 26,
-                "early_ok": "Yes",
-                "delivery_window_start": "09:00 AM",
-                "delivery_window_end": "11:00 AM"
-            }
-        ])
-        st.dataframe(example_df, width="stretch")
+        st.markdown("---")
+        st.markdown("### 📥 Export Orders from Database")
+        st.markdown("Dispatchers can export orders directly:")
+        st.markdown("[🔗 Buncher Exporter (Metabase)](https://metabase.prod.gobuncha.com/question/12227-buncher-exporter?date=2026-02-13&Delivery_window=&Fulfillment_Geo=)")
+        st.info("💡 This exporter generates CSV files in the correct format for bulk upload.")
 
-    else:
-        # Combine CSV orders with manual orders
-        orders = []
-        window_minutes = None
+    # AFTER CSV UPLOAD: Show order preview and results
+    elif uploaded_file and orders:
+        st.markdown("# 🚐 Route Optimization")
 
-        try:
-            if uploaded_file:
-                csv_orders, window_minutes = parser.parse_csv(uploaded_file)
+        # Show upload summary
+        st.success(f"✅ Loaded {len(orders)} orders with {window_minutes}-minute delivery window")
 
-                # Apply status filter if orderStatus field exists
-                if csv_orders and "orderStatus" in csv_orders[0]:
-                    original_count = len(csv_orders)
-                    csv_orders = [o for o in csv_orders if o.get("orderStatus") in status_filter]
-                    filtered_count = original_count - len(csv_orders)
-                    if filtered_count > 0:
-                        st.info(f"🔍 Filtered out {filtered_count} orders based on status (keeping: {', '.join(status_filter)})")
+        # Validate orders
+        valid_orders, errors = parser.validate_orders(orders)
 
-                orders.extend(csv_orders)
+        if errors:
+            st.error(f"❌ Found {len(errors)} validation errors:")
+            for error in errors:
+                st.write(f"- {error}")
 
-            if st.session_state.manual_orders:
-                orders.extend(st.session_state.manual_orders)
-                if window_minutes is None:
-                    # Calculate from first manual order
-                    first_order = st.session_state.manual_orders[0]
-                    start_min = first_order["delivery_window_start"].hour * 60 + first_order["delivery_window_start"].minute
-                    end_min = first_order["delivery_window_end"].hour * 60 + first_order["delivery_window_end"].minute
-                    window_minutes = end_min - start_min
+        # BEFORE optimization runs: editable order preview
+        if not st.session_state.get('optimization_complete', False):
+            with st.expander("📦 Order Preview & Management", expanded=True):
+                st.markdown("Review and edit orders before optimization. Add/remove rows as needed.")
 
-            # Apply window override if set
-            original_window = window_minutes
-            if window_override > 0:
-                window_minutes = window_override
-                st.info(f"⚙️ Window override applied: {original_window} min → {window_minutes} min")
-
-            st.success(f"✅ Loaded {len(orders)} orders with {window_minutes}-minute delivery window")
-
-            # Show preview with edit capability
-            with st.expander("📋 Order Preview & Management", expanded=True):
-                # Build preview dataframe with all available fields
+                # Build preview dataframe
                 preview_rows = []
                 for o in orders:
                     row = {
@@ -1397,7 +1484,7 @@ def main():
                         "deliveryWindow": f"{o['delivery_window_start'].strftime('%I:%M %p')} {o['delivery_window_end'].strftime('%I:%M %p')}"
                     }
 
-                    # Add optional fields from new CSV format if present
+                    # Add optional fields if present
                     optional_fields = ["orderId", "runId", "orderStatus", "customerTag",
                                      "deliveryDate", "priorRescheduleCount", "fulfillmentLocation",
                                      "fulfillmentGeo", "fulfillmentLocationAddress", "extendedCutOffTime"]
@@ -1412,25 +1499,54 @@ def main():
 
                 edited_df = st.data_editor(
                     preview_df,
-                    num_rows="dynamic",
-                    width="stretch",
-                    key="order_editor",
-                    height=400
+                    num_rows="dynamic",  # Allow adding/deleting rows
+                    width='stretch',
+                    height=400,
+                    key="order_editor"
                 )
 
-                st.caption(f"Showing all {len(orders)} orders with all available fields. You can edit values directly or add/remove rows.")
+                st.caption("💡 You can add/remove orders and edit values. Changes apply to this session only.")
 
-            # Extract depot address from fulfillmentLocationAddress (same for all orders)
-            depot_address_from_csv = None
-            if orders and 'fulfillmentLocationAddress' in orders[0]:
-                depot_address_from_csv = orders[0]['fulfillmentLocationAddress']
-                if depot_address_from_csv and depot_address_from_csv.strip():
-                    depot_address = depot_address_from_csv.strip()
-                    st.info(f"📍 Depot auto-detected from CSV: {depot_address}")
+        # AFTER optimization runs: read-only order preview (show ALL imported data)
+        else:
+            with st.expander("📦 Order Preview", expanded=False):
+                preview_rows = []
+                for o in orders:
+                    # Start with core fields
+                    row = {
+                        "externalOrderId": o["order_id"],
+                        "customerID": o["customer_name"],
+                        "address": o["delivery_address"],
+                        "numberOfUnits": o["units"],
+                        "earlyEligible": "true" if o["early_delivery_ok"] else "false",
+                        "deliveryWindow": f"{o['delivery_window_start'].strftime('%I:%M %p')} {o['delivery_window_end'].strftime('%I:%M %p')}"
+                    }
 
+                    # Add ALL optional fields if present (to show complete imported data)
+                    optional_fields = ["orderId", "runId", "orderStatus", "customerTag",
+                                     "deliveryDate", "priorRescheduleCount", "fulfillmentLocation",
+                                     "fulfillmentGeo", "fulfillmentLocationAddress", "extendedCutOffTime"]
+
+                    for field in optional_fields:
+                        if field in o and o[field] is not None:
+                            row[field] = o[field]
+
+                    preview_rows.append(row)
+
+                preview_df = pd.DataFrame(preview_rows)
+
+                st.dataframe(
+                    preview_df,
+                    width='stretch',
+                    height=400
+                )
+                st.caption("📌 Orders are locked after optimization. Re-upload CSV to make changes.")
+
+        # Multiple Windows capacity configuration (shown in main window)
+        if mode == "Multiple Windows" and valid_orders:
             # Detect unique delivery windows
             unique_windows = set()
-            for order in orders:
+            for order in valid_orders:
                 window_start = order['delivery_window_start']
                 window_end = order['delivery_window_end']
                 unique_windows.add((window_start, window_end))
@@ -1443,241 +1559,111 @@ def main():
             window_labels_list = [window_label(start, end) for start, end in sorted_windows]
 
             st.markdown("---")
-            st.subheader("🚐 Optimization Mode")
+            st.subheader("🚛 Configure Capacity Per Window")
 
-            # Mode selector
-            mode = st.radio(
-                "Choose optimization mode:",
-                ["One Window", "Multiple Windows"],
-                index=1,  # Default to "Multiple Windows"
-                help="One Window: optimize a single delivery window. Multiple Windows: allocate orders across multiple windows."
-            )
+            # Build capacity configuration table
+            from datetime import datetime, time as dt_time
+            capacity_data = []
+            window_times_map = {}  # Store original window times for matching orders later
 
-            # Validate orders
-            valid_orders, errors = parser.validate_orders(orders)
-
-            if errors:
-                st.error(f"❌ Found {len(errors)} validation errors:")
-                for error in errors:
-                    st.write(f"- {error}")
-
-            # Mode-specific configuration
-            selected_window = None
-            window_capacities = {}
-
-            if mode == "One Window":
-                st.markdown("### 📅 Select Window")
-                selected_window_label = st.selectbox(
-                    "Choose delivery window to optimize:",
-                    window_labels_list,
-                    help="Select the delivery window you want to optimize"
-                )
-
-                # Find the corresponding window tuple
-                selected_window_index = window_labels_list.index(selected_window_label)
-                selected_window = sorted_windows[selected_window_index]
-
-                # Show window summary
+            for i, (win_start, win_end) in enumerate(sorted_windows):
+                label = window_labels_list[i]
                 window_orders = [o for o in valid_orders if
-                               o['delivery_window_start'] == selected_window[0] and
-                               o['delivery_window_end'] == selected_window[1]]
+                               o['delivery_window_start'] == win_start and
+                               o['delivery_window_end'] == win_end]
                 total_units = sum(o['units'] for o in window_orders)
 
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Orders in window", len(window_orders))
-                with col2:
-                    st.metric("Total units", total_units)
-                with col3:
-                    st.metric("Vehicle capacity", vehicle_capacity)
+                # Calculate window length in minutes
+                start_minutes = win_start.hour * 60 + win_start.minute
+                end_minutes = win_end.hour * 60 + win_end.minute
+                window_length = end_minutes - start_minutes
 
-            else:  # Multiple Windows mode
-                # Show window labels in header
-                window_summary = " | ".join([f"**{label}**" for label in window_labels_list])
-                st.markdown(f"### 🚛 Configure Capacity Per Window\n{window_summary}")
+                utilization = round((total_units / 300) * 100, 1) if 300 > 0 else 0
+                status = "🟢" if total_units <= 300 else "🔴"
 
-                # Build capacity configuration table with editable times
-                from datetime import datetime, time as dt_time
-                capacity_data = []
-                window_times_map = {}  # Store original window times for matching orders later
+                capacity_data.append({
+                    "Window": label,  # Keep for internal use but hide in display
+                    "Start": win_start,  # Keep as time object for TimeColumn
+                    "End": win_end,  # Keep as time object for TimeColumn
+                    "Length (min)": window_length,
+                    "Orders": len(window_orders),
+                    "Units": total_units,
+                    "Capacity": 300,  # Default capacity
+                    "Utilization %": utilization,
+                    "Status": status
+                })
 
-                for i, (win_start, win_end) in enumerate(sorted_windows):
-                    label = window_labels_list[i]
-                    window_orders = [o for o in valid_orders if
-                                   o['delivery_window_start'] == win_start and
-                                   o['delivery_window_end'] == win_end]
-                    total_units = sum(o['units'] for o in window_orders)
+                # Store mapping for later
+                window_times_map[label] = (win_start, win_end)
 
-                    # Calculate window length in minutes
-                    start_minutes = win_start.hour * 60 + win_start.minute
-                    end_minutes = win_end.hour * 60 + win_end.minute
-                    window_length = end_minutes - start_minutes
+            # Create editable dataframe
+            capacity_df = pd.DataFrame(capacity_data)
 
-                    utilization = round((total_units / 300) * 100, 1) if 300 > 0 else 0
-                    status = "🟢" if total_units <= 300 else "🔴"
-
-                    capacity_data.append({
-                        "Window": label,  # Keep for internal use but hide in display
-                        "Start": win_start,  # Keep as time object for TimeColumn
-                        "End": win_end,  # Keep as time object for TimeColumn
-                        "Length (min)": window_length,
-                        "Orders": len(window_orders),
-                        "Units": total_units,
-                        "Capacity": 300,  # Default capacity
-                        "Utilization %": utilization,
-                        "Status": status
-                    })
-
-                    # Store mapping for later
-                    window_times_map[label] = (win_start, win_end)
-
-                # Create editable dataframe
-                capacity_df = pd.DataFrame(capacity_data)
-
-                edited_df = st.data_editor(
-                    capacity_df,
-                    use_container_width=True,
-                    hide_index=True,
-                    column_config={
-                        "Window": None,  # Hide this column
-                        "Start": st.column_config.TimeColumn(
-                            "Start",
-                            format="hh:mm a",
-                            width="small",
-                            help="Edit window start time"
-                        ),
-                        "End": st.column_config.TimeColumn(
-                            "End",
-                            format="hh:mm a",
-                            width="small",
-                            help="Edit window end time"
-                        ),
-                        "Length (min)": st.column_config.NumberColumn(
-                            "Length (min)",
-                            disabled=True,
-                            width="small",
-                            help="Calculated from Start/End"
-                        ),
-                        "Orders": st.column_config.NumberColumn(
-                            "Orders",
-                            disabled=True,
-                            width="small"
-                        ),
-                        "Units": st.column_config.NumberColumn(
-                            "Units",
-                            disabled=True,
-                            width="small",
-                            help="Total units"
-                        ),
-                        "Capacity": st.column_config.NumberColumn(
-                            "Capacity",
-                            min_value=0,
-                            max_value=1000,
-                            step=10,
-                            width="small",
-                            help="Edit vehicle capacity (units)"
-                        ),
-                        "Utilization %": st.column_config.NumberColumn(
-                            "Util %",
-                            disabled=True,
-                            width="small",
-                            help="Capacity utilization percentage"
-                        ),
-                        "Status": st.column_config.TextColumn(
-                            "Status",
-                            disabled=True,
-                            width="small",
-                            help="🟢 = Sufficient | 🔴 = Over capacity"
-                        )
-                    },
-                    key="capacity_editor"
-                )
-
-                # Update window_capacities dict and recalculate based on edits
-                updated_windows = []  # Store updated window times
-                for idx, row in edited_df.iterrows():
-                    label = row["Window"]
-                    capacity = row["Capacity"]
-                    units = row["Units"]
-                    window_capacities[label] = capacity
-
-                    # Parse edited times and calculate length
-                    try:
-                        if isinstance(row["Start"], str):
-                            start_time = datetime.strptime(row["Start"], "%I:%M %p").time()
-                        else:
-                            start_time = row["Start"]
-
-                        if isinstance(row["End"], str):
-                            end_time = datetime.strptime(row["End"], "%I:%M %p").time()
-                        else:
-                            end_time = row["End"]
-
-                        # Calculate window length
-                        start_minutes = start_time.hour * 60 + start_time.minute
-                        end_minutes = end_time.hour * 60 + end_time.minute
-                        window_length = end_minutes - start_minutes
-
-                        # Update the length column
-                        edited_df.at[idx, "Length (min)"] = window_length
-
-                        # Store updated window times
-                        updated_windows.append((label, start_time, end_time))
-
-                    except (ValueError, AttributeError):
-                        # If parsing fails, use original times
-                        orig_start, orig_end = window_times_map[label]
-                        updated_windows.append((label, orig_start, orig_end))
-
-                    # Recalculate utilization and status based on edited capacity
-                    utilization = round((units / capacity) * 100, 1) if capacity > 0 else 0
-                    status = "🟢" if units <= capacity else "🔴"
-                    edited_df.at[idx, "Utilization %"] = utilization
-                    edited_df.at[idx, "Status"] = status
-
-                # Store updated window times in session state for use in optimization
-                st.session_state['updated_window_times'] = {label: (start, end) for label, start, end in updated_windows}
-
-                # Show summary of capacity issues
-                insufficient_windows = edited_df[edited_df["Units"] > edited_df["Capacity"]]
-                if not insufficient_windows.empty:
-                    total_overflow = (insufficient_windows["Units"] - insufficient_windows["Capacity"]).sum()
-                    st.warning(f"⚠️ {len(insufficient_windows)} window(s) with insufficient capacity. Total overflow: {int(total_overflow)} units will need reallocation.")
-                else:
-                    st.success("✅ All windows have sufficient capacity")
-
-                # Allocation strategy options
-                st.markdown("### ⚙️ Allocation Strategy")
-                honor_priority = st.checkbox(
-                    "Honor priority customers (power/vip stay in original window)",
-                    value=False,
-                    help="When checked: Priority customers locked to original window (Pass 1). Uncheck for 'truly max orders' view that ignores customer priority."
-                )
-
-                if not honor_priority:
-                    st.info("🔓 Priority customer lock disabled - optimizing for maximum orders across all windows regardless of customer tags")
-
-                # Overflow thresholds
-                col1, col2 = st.columns(2)
-                with col1:
-                    cancel_threshold = st.number_input(
-                        "Auto-cancel threshold (units)",
-                        min_value=0,
-                        value=75,
-                        step=5,
-                        help="Orders over this size automatically cancelled if they don't fit"
+            # Show editable capacity table
+            edited_df = st.data_editor(
+                capacity_df,
+                width='stretch',
+                hide_index=True,
+                column_config={
+                    "Window": None,  # Hide this column
+                    "Start": st.column_config.TimeColumn(
+                        "Start",
+                        format="hh:mm a",
+                        width="small",
+                        help="Edit window start time"
+                    ),
+                    "End": st.column_config.TimeColumn(
+                        "End",
+                        format="hh:mm a",
+                        width="small",
+                        help="Edit window end time"
+                    ),
+                    "Length (min)": st.column_config.NumberColumn(
+                        "Length (min)",
+                        disabled=True,
+                        width="small",
+                        help="Calculated from Start/End"
+                    ),
+                    "Orders": st.column_config.NumberColumn(
+                        "Orders",
+                        disabled=True,
+                        width="small"
+                    ),
+                    "Units": st.column_config.NumberColumn(
+                        "Units",
+                        disabled=True,
+                        width="small"
+                    ),
+                    "Capacity": st.column_config.NumberColumn(
+                        "Capacity",
+                        min_value=50,
+                        max_value=500,
+                        step=10,
+                        width="small",
+                        help="Set capacity for this window"
+                    ),
+                    "Utilization %": st.column_config.NumberColumn(
+                        "Utilization %",
+                        disabled=True,
+                        width="small"
+                    ),
+                    "Status": st.column_config.TextColumn(
+                        "Status",
+                        disabled=True,
+                        width="small"
                     )
-                with col2:
-                    reschedule_threshold = st.number_input(
-                        "Auto-reschedule threshold (units)",
-                        min_value=0,
-                        value=40,
-                        step=5,
-                        help="Orders over this size automatically rescheduled if they don't fit"
-                    )
+                },
+                key="capacity_editor"
+            )
 
-                st.caption(f"💡 Strategy: Orders >{cancel_threshold} units → CANCEL, >{reschedule_threshold} units → RESCHEDULE, else use reschedule_count")
+            # Extract capacities from edited dataframe
+            window_capacities = {}
+            for _, row in edited_df.iterrows():
+                label = row["Window"]
+                window_capacities[label] = int(row["Capacity"])
 
+        # Run optimization execution starts here
+        try:
             if valid_orders and run_optimization:
                 # Progress updates (no visual bar, just status messages)
                 progress_text = st.empty()
@@ -2553,69 +2539,41 @@ def main():
                                 st.markdown("#### ✅ KEEP (On Route)")
                                 keep_data = []
                                 for k in sorted(keep, key=lambda x: x["sequence_index"]):
-                                    row = {
-                                        "Seq": k["sequence_index"] + 1,
-                                        "externalOrderId": k["order_id"],
-                                        "customerID": k["customer_name"],
-                                        "address": k["delivery_address"],
-                                        "numberOfUnits": k["units"]
-                                    }
-                                    csv_fields = extract_all_csv_fields(k)
-                                    row.update(csv_fields)
+                                    row = {"Seq": k["sequence_index"] + 1}
+                                    row.update(create_standard_row(k))
                                     keep_data.append(row)
                                 keep_df = pd.DataFrame(keep_data)
-                                st.dataframe(keep_df, use_container_width=True)
+                                st.dataframe(keep_df, width='stretch')
 
                             # Show EARLY orders
                             if early:
                                 st.markdown("#### ⏰ EARLY DELIVERY")
                                 early_data = []
                                 for e in early:
-                                    row = {
-                                        "externalOrderId": e["order_id"],
-                                        "customerID": e["customer_name"],
-                                        "address": e["delivery_address"],
-                                        "numberOfUnits": e["units"]
-                                    }
-                                    csv_fields = extract_all_csv_fields(e)
-                                    row.update(csv_fields)
+                                    row = create_standard_row(e)
                                     early_data.append(row)
                                 early_df = pd.DataFrame(early_data)
-                                st.dataframe(early_df, use_container_width=True)
+                                st.dataframe(early_df, width='stretch')
 
                             # Show RESCHEDULE orders
                             if reschedule:
                                 st.markdown("#### 📅 RESCHEDULE")
                                 resc_data = []
                                 for r in reschedule:
-                                    row = {
-                                        "externalOrderId": r["order_id"],
-                                        "customerID": r["customer_name"],
-                                        "address": r["delivery_address"],
-                                        "numberOfUnits": r["units"]
-                                    }
-                                    csv_fields = extract_all_csv_fields(r)
-                                    row.update(csv_fields)
+                                    row = create_standard_row(r)
                                     resc_data.append(row)
                                 resc_df = pd.DataFrame(resc_data)
-                                st.dataframe(resc_df, use_container_width=True)
+                                st.dataframe(resc_df, width='stretch')
 
                             # Show CANCEL orders
                             if cancel:
                                 st.markdown("#### ❌ CANCEL")
                                 cancel_data = []
                                 for c in cancel:
-                                    row = {
-                                        "externalOrderId": c["order_id"],
-                                        "customerID": c["customer_name"],
-                                        "address": c["delivery_address"],
-                                        "numberOfUnits": c["units"]
-                                    }
-                                    csv_fields = extract_all_csv_fields(c)
-                                    row.update(csv_fields)
+                                    row = create_standard_row(c)
                                     cancel_data.append(row)
                                 cancel_df = pd.DataFrame(cancel_data)
-                                st.dataframe(cancel_df, use_container_width=True)
+                                st.dataframe(cancel_df, width='stretch')
 
                     st.markdown("---")
 
@@ -2792,60 +2750,39 @@ def main():
                         with st.expander("🟢 Orders Moved Early", expanded=True):
                             moved_data = []
                             for a in allocation_result.moved_early:
-                                row = {
-                                    "externalOrderId": a.order["order_id"],
-                                    "customerID": a.order["customer_name"],
-                                    "address": a.order["delivery_address"],
-                                    "numberOfUnits": a.order["units"]
-                                }
-                                csv_fields = extract_all_csv_fields(a.order)
-                                row.update(csv_fields)
+                                row = create_standard_row(a.order)
                                 row["From Window"] = a.original_window
                                 row["To Window"] = a.assigned_window
                                 row["Reason"] = a.reason
                                 moved_data.append(row)
                             moved_df = pd.DataFrame(moved_data)
-                            st.dataframe(moved_df, use_container_width=True)
+                            st.dataframe(moved_df, width='stretch')
 
                     # Orders recommended for reschedule
                     if allocation_result.reschedule:
                         with st.expander("🟡 Orders Recommended for Reschedule", expanded=True):
                             resc_data = []
                             for a in allocation_result.reschedule:
-                                row = {
-                                    "externalOrderId": a.order["order_id"],
-                                    "customerID": a.order["customer_name"],
-                                    "address": a.order["delivery_address"],
-                                    "numberOfUnits": a.order["units"]
-                                }
-                                csv_fields = extract_all_csv_fields(a.order)
-                                row.update(csv_fields)
+                                row = create_standard_row(a.order)
                                 row["Original Window"] = a.original_window
                                 row["Reschedule Count"] = a.order.get("priorRescheduleCount", 0) or 0
                                 row["Reason"] = a.reason
                                 resc_data.append(row)
                             resc_df = pd.DataFrame(resc_data)
-                            st.dataframe(resc_df, use_container_width=True)
+                            st.dataframe(resc_df, width='stretch')
 
                     # Orders recommended for cancel
                     if allocation_result.cancel:
                         with st.expander("🔴 Orders Recommended for Cancel", expanded=True):
                             cancel_data = []
                             for a in allocation_result.cancel:
-                                row = {
-                                    "externalOrderId": a.order["order_id"],
-                                    "customerID": a.order["customer_name"],
-                                    "address": a.order["delivery_address"],
-                                    "numberOfUnits": a.order["units"]
-                                }
-                                csv_fields = extract_all_csv_fields(a.order)
-                                row.update(csv_fields)
+                                row = create_standard_row(a.order)
                                 row["Original Window"] = a.original_window
                                 row["Reschedule Count"] = a.order.get("priorRescheduleCount", 0) or 0
                                 row["Reason"] = a.reason
                                 cancel_data.append(row)
                             cancel_df = pd.DataFrame(cancel_data)
-                            st.dataframe(cancel_df, use_container_width=True)
+                            st.dataframe(cancel_df, width='stretch')
 
                     st.success("🟢 CHECKPOINT 2: After allocation details, before AI validation")
 
@@ -3158,13 +3095,8 @@ Be concise but thorough. Focus on actionable insights."""
                                 st.markdown("#### ✅ KEEP (On Route)")
                                 keep_data = []
                                 for k in sorted(result['keep'], key=lambda x: x.get("sequence_index", 0)):
-                                    row = {
-                                        "Seq": k.get("sequence_index", 0) + 1,
-                                        "externalOrderId": k.get("order_id", "N/A"),
-                                        "customerID": k.get("customer_name", "N/A"),
-                                        "address": k.get("delivery_address", "N/A"),
-                                        "numberOfUnits": k.get("units", 0)
-                                    }
+                                    row = {"Seq": k.get("sequence_index", 0) + 1}
+                                    row.update(create_standard_row(k))
                                     keep_data.append(row)
                                 keep_df = pd.DataFrame(keep_data)
                                 st.dataframe(keep_df, width="stretch")
@@ -3179,12 +3111,7 @@ Be concise but thorough. Focus on actionable insights."""
                                     st.markdown(f"#### {emoji} {label}")
                                     data = []
                                     for item in result[category]:
-                                        row = {
-                                            "externalOrderId": item.get("order_id", "N/A"),
-                                            "customerID": item.get("customer_name", "N/A"),
-                                            "address": item.get("delivery_address", "N/A"),
-                                            "numberOfUnits": item.get("units", 0)
-                                        }
+                                        row = create_standard_row(item)
                                         data.append(row)
                                     df = pd.DataFrame(data)
                                     st.dataframe(df, width="stretch")
@@ -3199,15 +3126,10 @@ Be concise but thorough. Focus on actionable insights."""
                         with st.expander("🟢 Orders Moved Early", expanded=True):
                             moved_data = []
                             for a in allocation_result.moved_early:
-                                row = {
-                                    "externalOrderId": a.order["order_id"],
-                                    "customerID": a.order["customer_name"],
-                                    "address": a.order["delivery_address"],
-                                    "numberOfUnits": a.order["units"],
-                                    "From Window": a.original_window,
-                                    "To Window": a.assigned_window,
-                                    "Reason": a.reason
-                                }
+                                row = create_standard_row(a.order)
+                                row["From Window"] = a.original_window
+                                row["To Window"] = a.assigned_window
+                                row["Reason"] = a.reason
                                 moved_data.append(row)
                             moved_df = pd.DataFrame(moved_data)
                             st.dataframe(moved_df, width="stretch")
@@ -3217,15 +3139,10 @@ Be concise but thorough. Focus on actionable insights."""
                         with st.expander("🟡 Orders Recommended for Reschedule", expanded=True):
                             resc_data = []
                             for a in allocation_result.reschedule:
-                                row = {
-                                    "externalOrderId": a.order["order_id"],
-                                    "customerID": a.order["customer_name"],
-                                    "address": a.order["delivery_address"],
-                                    "numberOfUnits": a.order["units"],
-                                    "Original Window": a.original_window,
-                                    "Reschedule Count": a.order.get("priorRescheduleCount", 0) or 0,
-                                    "Reason": a.reason
-                                }
+                                row = create_standard_row(a.order)
+                                row["Original Window"] = a.original_window
+                                row["Reschedule Count"] = a.order.get("priorRescheduleCount", 0) or 0
+                                row["Reason"] = a.reason
                                 resc_data.append(row)
                             resc_df = pd.DataFrame(resc_data)
                             st.dataframe(resc_df, width="stretch")
@@ -3235,15 +3152,10 @@ Be concise but thorough. Focus on actionable insights."""
                         with st.expander("🔴 Orders Recommended for Cancel", expanded=True):
                             cancel_data = []
                             for a in allocation_result.cancel:
-                                row = {
-                                    "externalOrderId": a.order["order_id"],
-                                    "customerID": a.order["customer_name"],
-                                    "address": a.order["delivery_address"],
-                                    "numberOfUnits": a.order["units"],
-                                    "Original Window": a.original_window,
-                                    "Reschedule Count": a.order.get("priorRescheduleCount", 0) or 0,
-                                    "Reason": a.reason
-                                }
+                                row = create_standard_row(a.order)
+                                row["Original Window"] = a.original_window
+                                row["Reschedule Count"] = a.order.get("priorRescheduleCount", 0) or 0
+                                row["Reason"] = a.reason
                                 cancel_data.append(row)
                             cancel_df = pd.DataFrame(cancel_data)
                             st.dataframe(cancel_df, width="stretch")
