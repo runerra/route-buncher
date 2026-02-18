@@ -461,7 +461,6 @@ we dont need to show fulfillment, default capcity in side bar as these can be co
 
 # Lost changes on 2/17 Recovery
 
-sa
 ⏺ Compact summary
   ⎿  This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the
      conversation.
