@@ -148,6 +148,7 @@ def allocate_orders_across_windows(
 
     # PRE-PASS: Filter out oversized orders BEFORE allocation
     orders_to_allocate = []
+    large_deferred = []  # Large-but-below-cancel orders deferred to Pass 6 (later windows, after normal allocation)
 
     for order in orders:
         orig_window = window_label(order['delivery_window_start'], order['delivery_window_end'])
@@ -159,7 +160,7 @@ def allocate_orders_across_windows(
 
         # Size-based pre-filtering
         if units > cancel_threshold:
-            # Too large - pre-cancel
+            # Too large for any route - pre-cancel
             allocation = OrderAllocation(
                 order=order,
                 original_window=orig_window,
@@ -169,17 +170,22 @@ def allocate_orders_across_windows(
             )
             cancel.append(allocation)
         elif units > reschedule_threshold:
-            # Large - pre-reschedule
-            allocation = OrderAllocation(
-                order=order,
-                original_window=orig_window,
-                assigned_window=None,
-                decision="RESCHEDULE",
-                reason=f"Order size {units} units exceeds reschedule threshold ({reschedule_threshold}) — reschedule to different day"
-            )
-            reschedule.append(allocation)
+            if reschedule_count >= 2:
+                # Large AND rescheduled too many times — pre-cancel
+                allocation = OrderAllocation(
+                    order=order,
+                    original_window=orig_window,
+                    assigned_window=None,
+                    decision="CANCEL_RECOMMENDED",
+                    reason=f"Order size {units} units exceeds reschedule threshold ({reschedule_threshold}) — already rescheduled {reschedule_count} times — recommend cancel"
+                )
+                cancel.append(allocation)
+            else:
+                # Large but first/second attempt — defer to Pass 6 to try later windows
+                # after all normal-sized orders have been placed
+                large_deferred.append(order)
         else:
-            # Normal size - proceed with allocation
+            # Normal size - proceed with standard allocation
             orders_to_allocate.append(order)
 
     # Pass 1: Lock priority customers to their original window (OPTIONAL)
@@ -256,9 +262,13 @@ def allocate_orders_across_windows(
             # Could not move early - will be handled in Pass 3
             unassigned_orders.append(order)
 
-    # Add non-early-eligible orders to unassigned pool
+    # Non-early orders go BEFORE early-eligible-failed orders in the unassigned pool.
+    # Non-early orders have a strict window requirement (cannot flex to another window
+    # without a reschedule), so they take priority for their original window slot in Pass 3.
+    # early_ok-failed orders are more flexible — if they can't go earlier AND get bumped
+    # from their own window, they can still be tried in a later window via Pass 5.
     non_early = [o for o in remaining_orders if not o.get('early_delivery_ok', False)]
-    unassigned_orders.extend(non_early)
+    unassigned_orders = non_early + unassigned_orders
 
     # Pass 3: Assign remaining orders to their original windows if capacity allows
     for order in unassigned_orders[:]:  # Copy to allow modification
@@ -347,7 +357,7 @@ def allocate_orders_across_windows(
                     original_window=orig_window,
                     assigned_window=label,
                     decision="MOVED_LATER_WINDOW",
-                    reason=f"Overflow from {orig_window} — moved to {label} (capacity available; route fit confirmed after optimization)"
+                    reason=f"Capacity overflow — {orig_window} was full at allocation time; moved to {label} (geographic fit confirmed by optimizer)"
                 )
                 moved_later.append(allocation)
                 rescued = True
@@ -371,6 +381,67 @@ def allocate_orders_across_windows(
                     assigned_window=None,
                     decision="RESCHEDULE",
                     reason=f"No available capacity in any later window today — reschedule to new day (reschedule count: {reschedule_count})"
+                )
+                reschedule.append(allocation)
+
+    # Pass 6: Place deferred large orders in later windows using only remaining capacity.
+    # These orders (reschedule_threshold < units <= cancel_threshold, reschedule_count < 2)
+    # are tried AFTER all normal-sized orders have been placed, so they only consume
+    # capacity that smaller orders did not need. Typically they land later in the day.
+    for order in large_deferred:
+        orig_window = window_label(order['delivery_window_start'], order['delivery_window_end'])
+        orig_start = order['delivery_window_start']
+        units = order['units']
+        reschedule_count = order.get('priorRescheduleCount', 0) or 0
+
+        if isinstance(reschedule_count, str):
+            reschedule_count = int(reschedule_count) if reschedule_count.strip() else 0
+
+        rescued = False
+        for label, (win_start, win_end) in sorted_window_items:
+            # Only try windows that start AFTER the order's original window
+            if win_start <= orig_start:
+                continue
+
+            # Only place here if capacity remains after all normal orders were allocated
+            if remaining_capacity.get(label, 0) >= units:
+                remaining_capacity[label] -= units
+                assigned_orders[label].append(order)
+
+                allocation = OrderAllocation(
+                    order=order,
+                    original_window=orig_window,
+                    assigned_window=label,
+                    decision="MOVED_LATER_WINDOW",
+                    reason=f"Large order ({units} units) — placed in {label} using remaining capacity after normal-sized orders allocated"
+                )
+                moved_later.append(allocation)
+                rescued = True
+                break
+
+        if not rescued:
+            # Last resort: try the original window if capacity remains there.
+            # Large orders are lowest priority — they only land in their original
+            # window if smaller/early-eligible orders did NOT fill it first.
+            if remaining_capacity.get(orig_window, 0) >= units:
+                remaining_capacity[orig_window] -= units
+                assigned_orders[orig_window].append(order)
+
+                allocation = OrderAllocation(
+                    order=order,
+                    original_window=orig_window,
+                    assigned_window=orig_window,
+                    decision="KEEP_WINDOW",
+                    reason=f"Large order ({units} units) — kept in original window (remaining capacity after all higher-priority orders placed)"
+                )
+                kept_in_window.append(allocation)
+            else:
+                allocation = OrderAllocation(
+                    order=order,
+                    original_window=orig_window,
+                    assigned_window=None,
+                    decision="RESCHEDULE",
+                    reason=f"Order size {units} units exceeds reschedule threshold ({reschedule_threshold}) — no remaining capacity in original or any later window — reschedule to new day (reschedule count: {reschedule_count})"
                 )
                 reschedule.append(allocation)
 

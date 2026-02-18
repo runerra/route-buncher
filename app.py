@@ -2450,6 +2450,35 @@ def main():
                                 route_time += win_time_matrix[kept_nodes[idx]][kept_nodes[idx + 1]]
                             route_time += win_time_matrix[kept_nodes[-1]][0]
 
+                        # Enrich drop reasons: distinguish time constraint vs geographic isolation
+                        if dropped and keep:
+                            # Build order_id → node index lookup
+                            _oid_to_node = {o.get('order_id'): i + 1 for i, o in enumerate(win_orders)}
+
+                            def _cheapest_insertion(node, k_nodes, tm, svc):
+                                """Min extra route time to insert node via cheapest-insertion heuristic."""
+                                best = tm[0][node] + svc + tm[node][k_nodes[0]] - tm[0][k_nodes[0]]
+                                for j in range(len(k_nodes) - 1):
+                                    a, b = k_nodes[j], k_nodes[j + 1]
+                                    best = min(best, tm[a][node] + svc + tm[node][b] - tm[a][b])
+                                best = min(best, tm[k_nodes[-1]][node] + svc + tm[node][0] - tm[k_nodes[-1]][0])
+                                return max(0, best)
+
+                            for drop_list in [reschedule, cancel, early]:
+                                for order in drop_list:
+                                    node = _oid_to_node.get(order.get('order_id'))
+                                    if node is None or node >= len(win_time_matrix):
+                                        continue
+                                    svc = win_service_times[node] if node < len(win_service_times) else 0
+                                    extra = _cheapest_insertion(node, kept_nodes, win_time_matrix, svc)
+                                    if route_time + extra > win_duration:
+                                        over = route_time + extra - win_duration
+                                        order['reason'] = (
+                                            f"Route time constraint — adding this stop would take ~{extra} min "
+                                            f"(route at {route_time}/{win_duration} min, ~{over} min over window limit)"
+                                        )
+                                    # else: geographic isolation reason from disposition.py stands
+
                         # Store ALL results for later display
                         window_results[win_label] = {
                             'keep': keep,
@@ -2490,10 +2519,10 @@ def main():
                         tw = alloc.assigned_window
                         if oid in window_kept_ids.get(tw, set()):
                             moved_later_outcome[oid] = 'kept'
-                            alloc.reason = f"Overflow from {alloc.original_window} → placed in {tw} ✓"
+                            alloc.reason = f"Capacity overflow at allocation time — {alloc.original_window} was full; placed in {tw} ✓"
                         elif oid in window_dropped_ids.get(tw, set()):
                             moved_later_outcome[oid] = 'dropped'
-                            alloc.reason = f"Tried {tw} — poor geographic fit for that route cluster — reschedule to new day"
+                            alloc.reason = f"Capacity overflow at allocation — {alloc.original_window} was full; tried {tw} but optimizer dropped it (time constraint or geographic isolation)"
                         else:
                             moved_later_outcome[oid] = 'unknown'
 
@@ -3143,6 +3172,15 @@ Numbers in parentheses in each column header are the **day total** across all wi
                             st.warning(f"⚠️ Count mismatch: Movement table shows {global_original_total} orders but CSV contained {len(valid_orders)} orders.")
 
                     # Global Movement Breakdowns
+                    def _reorder_reason(df):
+                        """Move 'Reason' column to appear right after 'numberOfUnits'."""
+                        if 'Reason' in df.columns and 'numberOfUnits' in df.columns:
+                            c = list(df.columns)
+                            c.remove('Reason')
+                            c.insert(c.index('numberOfUnits') + 1, 'Reason')
+                            return df[c]
+                        return df
+
                     # Deliver Early breakdown
                     if allocation_result.moved_early:
                         with st.expander(f"⏰ Deliver Early ({len(allocation_result.moved_early)} orders)", expanded=False):
@@ -3153,7 +3191,7 @@ Numbers in parentheses in each column header are the **day total** across all wi
                                 row["To Window"] = a.assigned_window
                                 row["Reason"] = a.reason
                                 deliver_early_data.append(row)
-                            deliver_early_df = pd.DataFrame(deliver_early_data)
+                            deliver_early_df = _reorder_reason(pd.DataFrame(deliver_early_data))
                             st.dataframe(deliver_early_df, use_container_width=True)
 
                     # Rescheduled orders breakdown (Pass 5 rescue — within today or to new day)
@@ -3175,7 +3213,7 @@ Numbers in parentheses in each column header are the **day total** across all wi
                                     row["Disposition"] = "Reschedule to New Day"
                                 row["Reason"] = a.reason
                                 moved_later_data.append(row)
-                            moved_later_df = pd.DataFrame(moved_later_data)
+                            moved_later_df = _reorder_reason(pd.DataFrame(moved_later_data))
                             st.dataframe(moved_later_df, use_container_width=True)
                             st.caption("Original window was full — these orders were attempted in a later window. 'Reschedule to New Day' means the later window's route cluster was too far geographically.")
 
@@ -3207,7 +3245,7 @@ Numbers in parentheses in each column header are the **day total** across all wi
 
                     if all_reschedule_data:
                         with st.expander(f"📅 Reschedule for New Day ({len(all_reschedule_data)} orders)", expanded=False):
-                            reschedule_df = pd.DataFrame(all_reschedule_data)
+                            reschedule_df = _reorder_reason(pd.DataFrame(all_reschedule_data))
                             st.dataframe(reschedule_df, use_container_width=True)
 
                     # Cancel breakdown (allocator + optimizer cancellations)
@@ -3236,7 +3274,7 @@ Numbers in parentheses in each column header are the **day total** across all wi
 
                     if all_cancel_data:
                         with st.expander(f"❌ Cancel ({len(all_cancel_data)} orders)", expanded=False):
-                            cancel_df = pd.DataFrame(all_cancel_data)
+                            cancel_df = _reorder_reason(pd.DataFrame(all_cancel_data))
                             st.dataframe(cancel_df, use_container_width=True)
 
                     st.markdown("---")
@@ -3253,70 +3291,90 @@ Numbers in parentheses in each column header are the **day total** across all wi
                                 st.info("No orders were assigned to this window after allocation.")
                             continue
 
-                        with st.expander(f"**{win_label}** — {result['orders_kept']} orders on route", expanded=True):
-                            from allocator import window_duration_minutes
-                            win_duration = window_duration_minutes(win_start, win_end)
+                        # Pre-compute metrics for header and info bar
+                        from allocator import window_duration_minutes
+                        win_duration = window_duration_minutes(win_start, win_end)
+                        win_capacity = window_capacities.get(win_label, 0)
+                        kept_units = result['total_units']
+                        route_time = result.get('route_time', 0)
+                        capacity_pct = (kept_units / win_capacity * 100) if win_capacity > 0 else 0
 
-                            # KPI Dashboard
-                            col1, col2, col3, col4, col5 = st.columns(5)
+                        moved_early_into_window = [a for a in allocation_result.moved_early if a.assigned_window == win_label]
+                        moved_later_into_window = [a for a in allocation_result.moved_later if a.assigned_window == win_label]
+                        moved_early_ids = {a.order.get('order_id') for a in moved_early_into_window}
+                        moved_later_ids = {a.order.get('order_id') for a in moved_later_into_window}
+                        all_received_ids = moved_early_ids | moved_later_ids
 
-                            win_capacity = window_capacities.get(win_label, 0)
-                            kept_units = result['total_units']
-                            route_time = result.get('route_time', 0)
-                            capacity_pct = (kept_units / win_capacity * 100) if win_capacity > 0 else 0
+                        orders_kept_stayed = sum(1 for k in result['keep'] if k.get('order_id') not in all_received_ids)
+                        orders_added_received = sum(1 for k in result['keep'] if k.get('order_id') in all_received_ids)
+                        total_on_route = orders_kept_stayed + orders_added_received
+                        efficiency = (total_on_route / (route_time / 60)) if route_time > 0 else 0
 
-                            # Calculate orders kept (stayed) vs orders added (received)
-                            # First, identify which orders in result['keep'] were received from other windows
-                            received_in_window = [a for a in allocation_result.moved_early if a.assigned_window == win_label]
-                            received_order_ids = {a.order.get('order_id') for a in received_in_window}
+                        win_service_times = result.get('service_times', [])
+                        total_service_time = sum(
+                            win_service_times[k['node']] for k in result['keep']
+                            if k.get('node', 0) < len(win_service_times)
+                        )
+                        drive_time = max(0, route_time - total_service_time)
 
-                            # Count how many kept orders are original vs received
-                            orders_kept_stayed = sum(1 for k in result['keep'] if k.get('order_id') not in received_order_ids)
-                            orders_added_received = sum(1 for k in result['keep'] if k.get('order_id') in received_order_ids)
-                            total_on_route = orders_kept_stayed + orders_added_received  # Should equal result['orders_kept']
-                            efficiency = (total_on_route / (route_time / 60)) if route_time > 0 else 0
+                        # Dead leg = depot→first stop + last stop→depot
+                        win_time_matrix = result.get('time_matrix', [])
+                        dead_leg_time = 0
+                        if result['keep'] and win_time_matrix:
+                            sorted_keep_nodes = [k['node'] for k in sorted(result['keep'], key=lambda x: x.get('sequence_index', 0))]
+                            dead_leg_time = win_time_matrix[0][sorted_keep_nodes[0]] + win_time_matrix[sorted_keep_nodes[-1]][0]
 
-                            with col1:
-                                st.metric("Orders Kept", orders_kept_stayed)
-                            with col2:
-                                st.metric("Received", orders_added_received)
-                            with col3:
-                                st.metric("Capacity Used", f"{kept_units}/{win_capacity}",
-                                         delta=f"{capacity_pct:.0f}%")
-                            with col4:
-                                st.metric("Route Time", f"{route_time} min",
-                                         delta=f"{(route_time/win_duration*100):.0f}% of window")
-                            with col5:
-                                st.metric("Efficiency", f"{efficiency:.1f} orders/hr")
+                        _header = (
+                            f"**{win_label}**  —  {total_on_route} orders"
+                            f"  ·  {kept_units}/{win_capacity} units ({capacity_pct:.0f}%)"
+                            f"  ·  {route_time} min ({drive_time} drive + {total_service_time} service)"
+                            f"  ·  {dead_leg_time} min dead leg"
+                            f"  ·  {efficiency:.1f} orders/hr"
+                        )
 
-                            # Calculate breakdown: original orders that stayed vs received
-                            received_in_window = [a for a in allocation_result.moved_early if a.assigned_window == win_label]
-                            received_order_ids = {a.order.get('order_id') for a in received_in_window}
+                        with st.expander(_header, expanded=True):
 
-                            # Orders that stayed = kept orders that are NOT in the received list
-                            orders_stayed = len([k for k in result.get('keep', []) if k.get('order_id') not in received_order_ids])
-                            orders_received = len(received_in_window)
-
-                            # Total on route = result['orders_kept'] (which already includes both stayed + received)
-                            total_on_route_display = result['orders_kept']
-
-                            st.markdown(f"**Route Summary**: {total_on_route_display} orders on route ({orders_stayed} kept + {orders_received} added), {kept_units} units")
-
-                            # Show On Route orders (all orders on route in this window)
-                            # This includes both orders that stayed (Kept) AND orders that moved in (Received)
+                            # On Route table — columns: Seq | Order ID | Customer | Address | Est Arrival | Service Time | Origin | Reason | Tag | Units | Early | Window
                             if result['keep']:
                                 st.markdown(f"#### 🚛 On Route ({len(result['keep'])} orders)")
+
+                                # Build reason lookup for kept/received orders
+                                _kept_reason = {a.order.get('order_id'): a.reason for a in allocation_result.kept_in_window}
+                                _received_reason = {a.order.get('order_id'): a.reason for a in moved_early_into_window}
+                                _received_reason.update({a.order.get('order_id'): a.reason for a in moved_later_into_window})
+
                                 keep_data = []
                                 for k in sorted(result['keep'], key=lambda x: x.get("sequence_index", 0)):
-                                    row = {"Seq": k.get("sequence_index", 0) + 1}
-                                    row.update(create_standard_row(k))
+                                    order_data = create_standard_row(k)
+                                    node = k.get('node', 0)
+                                    service_time = win_service_times[node] if 0 < node < len(win_service_times) else 0
+                                    arrival_min = k.get('estimated_arrival', 0)
 
-                                    # Add Origin column: "Original" if stayed (kept), "Received" if moved in
-                                    if k.get('order_id') in received_order_ids:
-                                        row["Origin"] = "📥 Received"
+                                    oid = k.get('order_id')
+                                    if oid in moved_early_ids:
+                                        origin = "⏰ Moved Early"
+                                        reason = _received_reason.get(oid, "")
+                                    elif oid in moved_later_ids:
+                                        origin = "⏩ Pushed Later"
+                                        reason = _received_reason.get(oid, "")
                                     else:
-                                        row["Origin"] = "Original"
+                                        origin = "🏠 Original"
+                                        reason = _kept_reason.get(oid, "Fits in original window")
 
+                                    row = {
+                                        "Seq": k.get("sequence_index", 0) + 1,
+                                        "externalOrderId": order_data.get("externalOrderId", ""),
+                                        "customerID": order_data.get("customerID", ""),
+                                        "address": order_data.get("address", ""),
+                                        "Est Arrival": f"+{arrival_min} min",
+                                        "Service Time": f"{service_time} min",
+                                        "Origin": origin,
+                                        "Reason": reason,
+                                        "customerTag": order_data.get("customerTag", ""),
+                                        "numberOfUnits": order_data.get("numberOfUnits", 0),
+                                        "earlyEligible": order_data.get("earlyEligible", "false"),
+                                        "deliveryWindow": order_data.get("deliveryWindow", ""),
+                                    }
                                     keep_data.append(row)
                                 keep_df = pd.DataFrame(keep_data)
                                 st.dataframe(keep_df, use_container_width=True)
@@ -3358,7 +3416,7 @@ Numbers in parentheses in each column header are the **day total** across all wi
                                         row["Reason"] = a.reason
                                         moved_out_data.append(row)
 
-                                    moved_out_df = pd.DataFrame(moved_out_data)
+                                    moved_out_df = _reorder_reason(pd.DataFrame(moved_out_data))
                                     st.dataframe(moved_out_df, use_container_width=True)
 
                     # ── 5. AI COMPUTATION (runs after movement/per-window — updates placeholder at position 2) ──
