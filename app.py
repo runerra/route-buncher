@@ -2318,19 +2318,6 @@ def main():
                         reschedule_threshold=reschedule_threshold
                     )
 
-                    # Show global allocation summary
-                    st.markdown("### 📈 Allocation Summary")
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Kept in window", len(allocation_result.kept_in_window))
-                    with col2:
-                        st.metric("Moved early", len(allocation_result.moved_early))
-                    with col3:
-                        st.metric("Reschedule", len(allocation_result.reschedule))
-                    with col4:
-                        st.metric("Cancel recommended", len(allocation_result.cancel))
-
-                    st.markdown("---")
 
                     # Note: Movement Summary with per-window breakdown will be added after window_results are populated
                     # This placeholder reminds us where it will appear in the final display
@@ -2448,93 +2435,68 @@ def main():
 
                     st.markdown("---")
 
-                    # Movement Summary
-                    st.markdown("### 📊 Movement Summary")
+                    # Movement by Window Table
+                    st.markdown("### 📊 Movement by Window")
 
-                    # Calculate totals (handle empty windows)
-                    total_in_window = sum(result.get('orders_kept', 0) for result in window_results.values() if not result.get('empty', False))
-                    total_delivered_early = len(allocation_result.moved_early)
-                    total_rescheduled = len(allocation_result.reschedule)
-                    total_cancelled = len(allocation_result.cancel)
+                    # Calculate global totals first
+                    global_original_total = len(valid_orders)  # All orders from CSV
+                    global_in_window = sum(result.get('orders_kept', 0) for result in window_results.values() if not result.get('empty', False))
+                    global_received = len([a for a in allocation_result.moved_early])  # Orders that moved early become "Received" in target window
+                    global_deliver_early = len([a for a in allocation_result.moved_early])  # Same orders, counted from source window perspective
+                    global_reschedule = len([a for a in allocation_result.reschedule])
+                    global_cancel = len([a for a in allocation_result.cancel])
+                    global_optimized_total = global_in_window + global_received
 
-                    # Display summary in columns
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("✅ In Window", total_in_window)
-                    with col2:
-                        st.metric("⏰ Deliver Early", total_delivered_early)
-                    with col3:
-                        st.metric("📅 Reschedule", total_rescheduled)
-                    with col4:
-                        st.metric("❌ Cancel", total_cancelled)
-
-                    st.markdown("---")
-
-                    # Per-window breakdown table
-                    st.markdown("#### Movement by Window")
-
+                    # Build per-window breakdown
                     window_breakdown = []
-                    for win_label, result in window_results.items():
-                        # Skip empty windows
-                        if result.get('empty', False):
+                    for win_label in window_labels_list:
+                        result = window_results.get(win_label)
+                        if not result or result.get('empty', False):
                             continue
 
-                        # Count orders that originated in this window
-                        moved_early_count = len([a for a in allocation_result.moved_early if a.original_window == win_label])
-                        rescheduled_count = len([a for a in allocation_result.reschedule if a.original_window == win_label])
-                        cancelled_count = len([a for a in allocation_result.cancel if a.original_window == win_label])
+                        # Original Total: Count all orders that STARTED in this window from CSV
+                        original_orders_in_window = [o for o in valid_orders if o.get('deliveryWindow', '') == win_label or
+                                                     (hasattr(o.get('delivery_window_start'), 'strftime') and
+                                                      f"{o['delivery_window_start'].strftime('%I:%M %p')} {o['delivery_window_end'].strftime('%I:%M %p')}" == win_label)]
+                        original_total = len(original_orders_in_window)
+
+                        # In Window: Orders that stayed in their original window
                         in_window_count = result.get('orders_kept', 0)
+
+                        # Received: Orders that moved INTO this window from a LATER window (deliver early)
+                        received_count = len([a for a in allocation_result.moved_early if a.assigned_window == win_label])
+
+                        # Deliver Early: Orders that moved OUT of this window to an EARLIER window
+                        deliver_early_count = len([a for a in allocation_result.moved_early if a.original_window == win_label])
+
+                        # Reschedule: Orders that will be rescheduled to a later date
+                        reschedule_count = len([a for a in allocation_result.reschedule if a.original_window == win_label])
+
+                        # Cancel: Orders that will not be delivered
+                        cancel_count = len([a for a in allocation_result.cancel if a.original_window == win_label])
+
+                        # Optimized Total: Orders that will actually be DELIVERED in this window
+                        optimized_total = in_window_count + received_count
 
                         window_breakdown.append({
                             "Window": win_label,
-                            "In Window": in_window_count,
-                            "Deliver Early": moved_early_count,
-                            "Reschedule": rescheduled_count,
-                            "Cancel": cancelled_count
+                            f"Original Total ({global_original_total})": original_total,
+                            f"Optimized Total ({global_optimized_total})": optimized_total,
+                            f"✅ In Window ({global_in_window})": in_window_count,
+                            f"📥 Received ({global_received})": received_count,
+                            f"⏰ Deliver Early ({global_deliver_early})": deliver_early_count,
+                            f"📅 Reschedule ({global_reschedule})": reschedule_count,
+                            f"❌ Cancel ({global_cancel})": cancel_count
                         })
 
                     if window_breakdown:
                         breakdown_df = pd.DataFrame(window_breakdown)
-                        st.dataframe(breakdown_df, width='stretch')
+                        st.dataframe(breakdown_df, use_container_width=True)
+                        st.caption("Totals in parentheses reflect all windows. Row values show counts per window after optimization is complete.")
 
-                    st.markdown("---")
-
-                    # Global collapsible sections for movement details
-                    if allocation_result.moved_early:
-                        with st.expander(f"⏰ Deliver Early ({len(allocation_result.moved_early)} orders)", expanded=False):
-                            moved_data = []
-                            for a in allocation_result.moved_early:
-                                row = create_standard_row(a.order)
-                                row["From Window"] = a.original_window
-                                row["To Window"] = a.assigned_window
-                                row["Reason"] = a.reason
-                                moved_data.append(row)
-                            moved_df = pd.DataFrame(moved_data)
-                            st.dataframe(moved_df, width='stretch')
-
-                    if allocation_result.reschedule:
-                        with st.expander(f"📅 Reschedule ({len(allocation_result.reschedule)} orders)", expanded=False):
-                            resc_data = []
-                            for a in allocation_result.reschedule:
-                                row = create_standard_row(a.order)
-                                row["Original Window"] = a.original_window
-                                row["Reschedule Count"] = a.order.get("priorRescheduleCount", 0) or 0
-                                row["Reason"] = a.reason
-                                resc_data.append(row)
-                            resc_df = pd.DataFrame(resc_data)
-                            st.dataframe(resc_df, width='stretch')
-
-                    if allocation_result.cancel:
-                        with st.expander(f"❌ Cancel ({len(allocation_result.cancel)} orders)", expanded=False):
-                            cancel_data = []
-                            for a in allocation_result.cancel:
-                                row = create_standard_row(a.order)
-                                row["Original Window"] = a.original_window
-                                row["Reschedule Count"] = a.order.get("priorRescheduleCount", 0) or 0
-                                row["Reason"] = a.reason
-                                cancel_data.append(row)
-                            cancel_df = pd.DataFrame(cancel_data)
-                            st.dataframe(cancel_df, width='stretch')
+                        # Validation check
+                        if global_original_total != len(valid_orders):
+                            st.warning(f"⚠️ Count mismatch: Movement table shows {global_original_total} orders but CSV contained {len(valid_orders)} orders.")
 
                     # AI VALIDATION FOR FULL DAY MODE
                     st.markdown("---")
@@ -2793,107 +2755,69 @@ Be concise but thorough. Focus on actionable insights."""
                     depot_address = stored['depot_address']
                     validation_result = stored.get('ai_validation')
 
-                    # Show global allocation summary
-                    st.markdown("### 📈 Allocation Summary")
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("Kept in window", len(allocation_result.kept_in_window))
-                    with col2:
-                        st.metric("Moved early", len(allocation_result.moved_early))
-                    with col3:
-                        st.metric("Reschedule", len(allocation_result.reschedule))
-                    with col4:
-                        st.metric("Cancel recommended", len(allocation_result.cancel))
 
-                    st.markdown("---")
+                    # Movement by Window Table
+                    st.markdown("### 📊 Movement by Window")
 
-                    # Movement Summary
-                    st.markdown("### 📊 Movement Summary")
+                    # Calculate global totals first
+                    global_original_total = len(valid_orders)  # All orders from CSV
+                    global_in_window = sum(result.get('orders_kept', 0) for result in window_results.values() if not result.get('empty', False))
+                    global_received = len([a for a in allocation_result.moved_early])  # Orders that moved early become "Received" in target window
+                    global_deliver_early = len([a for a in allocation_result.moved_early])  # Same orders, counted from source window perspective
+                    global_reschedule = len([a for a in allocation_result.reschedule])
+                    global_cancel = len([a for a in allocation_result.cancel])
+                    global_optimized_total = global_in_window + global_received
 
-                    # Calculate totals (handle empty windows)
-                    total_in_window = sum(result.get('orders_kept', 0) for result in window_results.values() if not result.get('empty', False))
-                    total_delivered_early = len(allocation_result.moved_early)
-                    total_rescheduled = len(allocation_result.reschedule)
-                    total_cancelled = len(allocation_result.cancel)
-
-                    # Display summary in columns
-                    col1, col2, col3, col4 = st.columns(4)
-                    with col1:
-                        st.metric("✅ In Window", total_in_window)
-                    with col2:
-                        st.metric("⏰ Deliver Early", total_delivered_early)
-                    with col3:
-                        st.metric("📅 Reschedule", total_rescheduled)
-                    with col4:
-                        st.metric("❌ Cancel", total_cancelled)
-
-                    st.markdown("---")
-
-                    # Per-window breakdown table
-                    st.markdown("#### Movement by Window")
-
+                    # Build per-window breakdown
                     window_breakdown = []
-                    for win_label, result in window_results.items():
-                        # Skip empty windows
-                        if result.get('empty', False):
+                    for win_label in window_labels_list:
+                        result = window_results.get(win_label)
+                        if not result or result.get('empty', False):
                             continue
 
-                        # Count orders that originated in this window
-                        moved_early_count = len([a for a in allocation_result.moved_early if a.original_window == win_label])
-                        rescheduled_count = len([a for a in allocation_result.reschedule if a.original_window == win_label])
-                        cancelled_count = len([a for a in allocation_result.cancel if a.original_window == win_label])
+                        # Original Total: Count all orders that STARTED in this window from CSV
+                        original_orders_in_window = [o for o in valid_orders if o.get('deliveryWindow', '') == win_label or
+                                                     (hasattr(o.get('delivery_window_start'), 'strftime') and
+                                                      f"{o['delivery_window_start'].strftime('%I:%M %p')} {o['delivery_window_end'].strftime('%I:%M %p')}" == win_label)]
+                        original_total = len(original_orders_in_window)
+
+                        # In Window: Orders that stayed in their original window
                         in_window_count = result.get('orders_kept', 0)
+
+                        # Received: Orders that moved INTO this window from a LATER window (deliver early)
+                        received_count = len([a for a in allocation_result.moved_early if a.assigned_window == win_label])
+
+                        # Deliver Early: Orders that moved OUT of this window to an EARLIER window
+                        deliver_early_count = len([a for a in allocation_result.moved_early if a.original_window == win_label])
+
+                        # Reschedule: Orders that will be rescheduled to a later date
+                        reschedule_count = len([a for a in allocation_result.reschedule if a.original_window == win_label])
+
+                        # Cancel: Orders that will not be delivered
+                        cancel_count = len([a for a in allocation_result.cancel if a.original_window == win_label])
+
+                        # Optimized Total: Orders that will actually be DELIVERED in this window
+                        optimized_total = in_window_count + received_count
 
                         window_breakdown.append({
                             "Window": win_label,
-                            "In Window": in_window_count,
-                            "Deliver Early": moved_early_count,
-                            "Reschedule": rescheduled_count,
-                            "Cancel": cancelled_count
+                            f"Original Total ({global_original_total})": original_total,
+                            f"Optimized Total ({global_optimized_total})": optimized_total,
+                            f"✅ In Window ({global_in_window})": in_window_count,
+                            f"📥 Received ({global_received})": received_count,
+                            f"⏰ Deliver Early ({global_deliver_early})": deliver_early_count,
+                            f"📅 Reschedule ({global_reschedule})": reschedule_count,
+                            f"❌ Cancel ({global_cancel})": cancel_count
                         })
 
                     if window_breakdown:
                         breakdown_df = pd.DataFrame(window_breakdown)
-                        st.dataframe(breakdown_df, width='stretch')
+                        st.dataframe(breakdown_df, use_container_width=True)
+                        st.caption("Totals in parentheses reflect all windows. Row values show counts per window after optimization is complete.")
 
-                    st.markdown("---")
-
-                    # Global collapsible sections for movement details
-                    if allocation_result.moved_early:
-                        with st.expander(f"⏰ Deliver Early ({len(allocation_result.moved_early)} orders)", expanded=False):
-                            moved_data = []
-                            for a in allocation_result.moved_early:
-                                row = create_standard_row(a.order)
-                                row["From Window"] = a.original_window
-                                row["To Window"] = a.assigned_window
-                                row["Reason"] = a.reason
-                                moved_data.append(row)
-                            moved_df = pd.DataFrame(moved_data)
-                            st.dataframe(moved_df, width='stretch')
-
-                    if allocation_result.reschedule:
-                        with st.expander(f"📅 Reschedule ({len(allocation_result.reschedule)} orders)", expanded=False):
-                            resc_data = []
-                            for a in allocation_result.reschedule:
-                                row = create_standard_row(a.order)
-                                row["Original Window"] = a.original_window
-                                row["Reschedule Count"] = a.order.get("priorRescheduleCount", 0) or 0
-                                row["Reason"] = a.reason
-                                resc_data.append(row)
-                            resc_df = pd.DataFrame(resc_data)
-                            st.dataframe(resc_df, width='stretch')
-
-                    if allocation_result.cancel:
-                        with st.expander(f"❌ Cancel ({len(allocation_result.cancel)} orders)", expanded=False):
-                            cancel_data = []
-                            for a in allocation_result.cancel:
-                                row = create_standard_row(a.order)
-                                row["Original Window"] = a.original_window
-                                row["Reschedule Count"] = a.order.get("priorRescheduleCount", 0) or 0
-                                row["Reason"] = a.reason
-                                cancel_data.append(row)
-                            cancel_df = pd.DataFrame(cancel_data)
-                            st.dataframe(cancel_df, width='stretch')
+                        # Validation check
+                        if global_original_total != len(valid_orders):
+                            st.warning(f"⚠️ Count mismatch: Movement table shows {global_original_total} orders but CSV contained {len(valid_orders)} orders.")
 
                     st.markdown("---")
 
@@ -2936,15 +2860,27 @@ Be concise but thorough. Focus on actionable insights."""
                             st.markdown(f"**Route Summary**: {result['orders_kept']} orders, {kept_units} units")
 
                             # Show In Window orders (all orders on route in this window)
+                            # This includes both orders that stayed AND orders that moved in (Received)
                             if result['keep']:
+                                # Count received orders in this window
+                                received_in_window = [a for a in allocation_result.moved_early if a.assigned_window == win_label]
+                                received_order_ids = {a.order.get('order_id') for a in received_in_window}
+
                                 st.markdown(f"#### ✅ In Window ({len(result['keep'])} orders)")
                                 keep_data = []
                                 for k in sorted(result['keep'], key=lambda x: x.get("sequence_index", 0)):
                                     row = {"Seq": k.get("sequence_index", 0) + 1}
                                     row.update(create_standard_row(k))
+
+                                    # Add Origin column: "Original" if stayed, "Received" if moved in
+                                    if k.get('order_id') in received_order_ids:
+                                        row["Origin"] = "📥 Received"
+                                    else:
+                                        row["Origin"] = "Original"
+
                                     keep_data.append(row)
                                 keep_df = pd.DataFrame(keep_data)
-                                st.dataframe(keep_df, width="stretch")
+                                st.dataframe(keep_df, use_container_width=True)
 
                             # Show combined movement details for orders that MOVED OUT of this window
                             delivered_early_from_window = [a for a in allocation_result.moved_early if a.original_window == win_label]
@@ -2984,7 +2920,7 @@ Be concise but thorough. Focus on actionable insights."""
                                         moved_out_data.append(row)
 
                                     moved_out_df = pd.DataFrame(moved_out_data)
-                                    st.dataframe(moved_out_df, width="stretch")
+                                    st.dataframe(moved_out_df, use_container_width=True)
 
                     st.markdown("---")
 

@@ -1,11 +1,5 @@
 Scratchpad
 
-
-
-
-
- 
-
 ❯ im checking the algorithim with a route that has less capacity in one window then the subsequent window, instead of the orders being moved into the
   next available window that makes sense, the orders were identified for reschedule, but not actually placed into that route, for each per window 
   optimization result, we should have KEEP (which is the original orders on that route), ADD (which are orders that have been moved into that route),  
@@ -49,21 +43,106 @@ REFACTOR CODE WHEREVER OPPORTUNITY EXSISTS
 
 # Changes 2/17
 
-Status Improvements
+# Metrics and KPI's updates :
+We're refining the post‑optimization UX for Multiple Windows Optimization so dispatchers can clearly see where every order ended up after optimization is complete.
 
-I need some help thinking through the status's that we have, I want to think of better names than keep, reschedule. 
+### Status language
 
-at the end of the day the dispatcher needs to be reccomended what orders to have in the window, vs not. and what orders we will never deliver. How is something like Keep, Reschedule (early or later), recieved (this could be early to deliver orders), cancelled 
+Every order should end up in one of five states, using these exact labels (present tense, never past tense and use standardized icons for each):
 
-then the windows tables can show whats actually on route and don't need to show cancel seepratley, we can also show the summary of the four states at the top with totals that are actually on route in a movement summary, the global allocation details turns into a movement summary. the orders moved early, reschsdule and cancel tables should be collapsed by default but should have the number of orders with that action in brackets in the title. i.e. Orders Moved Early (1) and can live under allocation summary, under allocation summary is the movement summary table for each window.
+- **In Window** – order was originally requested for this window and stays here.  
+- **Received** – order moved into this window from another window.  
+- **Deliver Early** – order moves out of this window to an earlier window.  
+- **Reschedule** – order moves out of this window to a later window.  
+- **Cancel** – order will not be delivered.
 
-for multiple windows 
+Use these five labels consistently across all tables and accordions, always in this order.
 
-We should add a table that breaks down movement between windows in one clear place as well as how many orders each window was moved, i.e. 9:11 window had 5 orders kept, one rescheduled, one recieved (from an later window) and 2 cancelled, total deliveries en route are 6
+### Single summary: Movement by Window (with totals)
 
-EAch windows table should have the On Route only deliveries with status (is the order on the route and original order, and early delivery order), 
+We do **not** need a separate "Global Allocation Summary." Instead, use one consolidated **Movement by Window** table that also acts as the global summary:
 
-Pending
+- Table columns (in this order):  
+  - Window  
+  - Total Orders  
+  - In Window  
+  - Received  
+  - Deliver Early  
+  - Reschedule  
+  - Cancel  
+
+- **Total Orders** is the sum of In Window + Received + Deliver Early + Reschedule + Cancel for that row. This is a sanity check that all orders in the window are accounted for.
+
+- The **column headers** should show global totals in parentheses, e.g.:  
+  - "Total Orders (12)"  
+  - "In Window (5)"  
+  - "Received (2)"  
+  - "Deliver Early (1)"  
+  - "Reschedule (3)"  
+  - "Cancel (0)"
+
+- The global Total Orders count should equal the number of orders in the uploaded CSV. If it doesn't, surface a warning.
+
+- Each row shows the counts for that specific window, so dispatchers can see both the global totals (in the headers) and per‑window breakdown (in the cells) in a single view.
+
+- Per‑window inflow/outflow logic:  
+  - **Inflows**: In Window (stayed) + Received (moved in from another window)  
+  - **Outflows**: Deliver Early (moved out to earlier window) + Reschedule (moved out to later window) + Cancel (dropped)
+
+- Add a short subtitle under the table:  
+  - "Totals in parentheses reflect all windows. Row values show counts per window after optimization is complete."
+
+### Timing and correctness of counts
+
+These movement numbers and totals should be calculated **only after all optimization is complete**, not during intermediate steps:
+
+- Ensure that the Movement by Window table is populated **after** the optimization run finishes and all orders have been assigned a final state.  
+- The sums across all windows and all five states should account for **100% of orders in the run** (no unassigned or missing orders).  
+- If any orders remain without a state, surface an error or warning instead of showing incomplete numbers.
+
+### Per‑window optimization results
+
+For the **Per‑Window Optimization Results** section:
+
+- Each window card should focus first on the **In Window** table for that window (expanded by default).  
+- Add an **Origin** column to the In Window table with two possible values:  
+  - **Original** – order was originally requested for this window.  
+  - **Received** – order was moved into this window from another window.  
+- Both types appear in the same In Window table so the dispatcher sees the full roster for that window but can distinguish native vs imported at a glance.
+
+- Under the In Window table, show a single collapsible accordion:  
+  - **Moved Out of Window (X orders)**  
+  where X is the total number of orders that left this window (Deliver Early + Reschedule + Cancel combined). This is **collapsed by default**.
+
+- Inside the Moved Out of Window table, include:  
+  - All existing order columns (externalOrderId, customerID, address, customerTag, numberOfUnits, earlyEligible, deliveryWindow, etc.)  
+  - An **Action** column at the end with one of three values:  
+    - **Deliver Early** – order moved to an earlier window.  
+    - **Reschedule** – order moved to a later window.  
+    - **Cancel** – order will not be delivered.  
+  - Use the same status icons/colors as elsewhere for each action value.
+
+- **Received** orders do not appear in the Moved Out table since they already show in the In Window table with Origin = Received.
+
+### Consistency checks
+
+- Per‑window row/column sums must match the global totals in the column headers.  
+- The In Window table row count for a given window should equal the In Window cell + Received cell for that window in the Movement by Window table.  
+- The Moved Out of Window accordion count for a given window should equal the Deliver Early + Reschedule + Cancel cells for that window in the Movement by Window table.  
+- The global Total Orders count must equal the number of orders in the uploaded CSV.  
+- Use the same icons, colors, and label order for the five statuses everywhere they appear.
+
+Please update the existing page structure and calculations to follow this model, with Movement by Window as the single source of truth for global and per‑window counts after optimization completes. 
+
+Use ask user question tool
+
+
+
+
+
+
+
+Pending - 
 the per window optimzation results tables are missing delivery early eligible information (this would have been shown in the initial import) can     
   you make sure this information (and anything else) is also visible in the per window optimization tables? 
 
@@ -77,7 +156,26 @@ the per window optimzation results tables are missing delivery early eligible in
 we do not need order movement details and orders moved between windows, can you remove order movement details header section and table as it is    
   already covered in orders moved between windows table?    
 
+When configure capacity per window table is modified for editable fields, the calculated fields should update in real time, i.e. if the end time for a 120 minute window is changed length in min should modifu, if capacity is dropped utilization should auto adjust and so should status.
 
+
+
+the flashing is still there but i have a better view now, it flashes to an older map style and then changes to the current table, there's also some debugging information that we don't see once the final version renders, we should figure out why the system is still rendering this old map based on openstreet maps, can you search the code and figure out what is going on? 
+
+
+Status Improvements
+
+I need some help thinking through the status's that we have, I want to think of better names than keep, reschedule. 
+
+at the end of the day the dispatcher needs to be reccomended what orders to have in the window, vs not. and what orders we will never deliver. How is something like Keep, Reschedule (early or later), recieved (this could be early to deliver orders), cancelled 
+
+then the windows tables can show whats actually on route and don't need to show cancel seepratley, we can also show the summary of the four states at the top with totals that are actually on route in a movement summary, the global allocation details turns into a movement summary. the orders moved early, reschsdule and cancel tables should be collapsed by default but should have the number of orders with that action in brackets in the title. i.e. Orders Moved Early (1) and can live under allocation summary, under allocation summary is the movement summary table for each window.
+
+for multiple windows 
+
+We should add a table that breaks down movement between windows in one clear place as well as how many orders each window was moved, i.e. 9:11 window had 5 orders kept, one rescheduled, one recieved (from an later window) and 2 cancelled, total deliveries en route are 6
+
+EAch windows table should have the On Route only deliveries with status (is the order on the route and original order, and early delivery order), 
 
 
 Table Fixes
