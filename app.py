@@ -872,12 +872,7 @@ def main():
         st.session_state.waiting_for_ai_response = False
 
     # Title
-    st.title("🚐 The Buncher - Route Optimizer")
-
-    st.markdown("""
-    Internal tool for optimizing delivery routes with capacity and time constraints.
-    Upload a CSV of orders to see which orders to keep, deliver early, reschedule, or cancel.
-    """)
+    st.title("🚚 The Buncher")
 
     # ============================================================================
     # SIDEBAR: Progressive Reveal Workflow
@@ -1451,8 +1446,6 @@ def main():
 
     # AFTER CSV UPLOAD: Show order preview and results
     elif uploaded_file and orders:
-        st.markdown("# 🚐 Route Optimization")
-
         # Show upload summary
         st.success(f"✅ Loaded {len(orders)} orders with {window_minutes}-minute delivery window")
 
@@ -2283,7 +2276,7 @@ def main():
 
                 elif mode == "Multiple Windows":
                     # MULTIPLE WINDOWS MODE: Allocate orders across windows, then optimize each window
-                    st.markdown("## 🌅 Multiple Windows Optimization")
+                    st.markdown("## 🌅 Multiple Windows")
 
                     # Import allocator
                     from allocator import allocate_orders_across_windows, window_label
@@ -2440,12 +2433,31 @@ def main():
 
                     # Calculate global totals first
                     global_original_total = len(valid_orders)  # All orders from CSV
-                    global_in_window = sum(result.get('orders_kept', 0) for result in window_results.values() if not result.get('empty', False))
-                    global_received = len([a for a in allocation_result.moved_early])  # Orders that moved early become "Received" in target window
-                    global_deliver_early = len([a for a in allocation_result.moved_early])  # Same orders, counted from source window perspective
+
+                    # Global Kept: Need to calculate by excluding received orders from each window's kept count
+                    # We'll calculate this by summing up per-window kept counts (which exclude received)
+                    global_kept_temp = 0  # Will be calculated in the loop below
+
+                    global_received = len([a for a in allocation_result.moved_early])  # Orders that moved in from another window
+                    global_deliver_early = len([a for a in allocation_result.moved_early])  # Same orders, from source window perspective
+
+                    # Global reschedule/cancel: Start with allocator decisions
                     global_reschedule = len([a for a in allocation_result.reschedule])
                     global_cancel = len([a for a in allocation_result.cancel])
-                    global_optimized_total = global_in_window + global_received
+
+                    # Calculate global_kept AND add optimizer reschedule/cancel by summing per-window counts
+                    for win_label in window_labels_list:
+                        result = window_results.get(win_label)
+                        if result and not result.get('empty', False):
+                            received_in_win = {a.order.get('order_id') for a in allocation_result.moved_early if a.assigned_window == win_label}
+                            global_kept_temp += len([k for k in result.get('keep', []) if k.get('order_id') not in received_in_win])
+
+                            # Add optimizer reschedule/cancel from this window
+                            global_reschedule += len(result.get('reschedule', []))
+                            global_cancel += len(result.get('cancel', []))
+
+                    global_kept = global_kept_temp
+                    global_on_route = global_kept + global_received  # Total orders being delivered
 
                     # Build per-window breakdown
                     window_breakdown = []
@@ -2454,35 +2466,45 @@ def main():
                         if not result or result.get('empty', False):
                             continue
 
-                        # Original Total: Count all orders that STARTED in this window from CSV
-                        original_orders_in_window = [o for o in valid_orders if o.get('deliveryWindow', '') == win_label or
-                                                     (hasattr(o.get('delivery_window_start'), 'strftime') and
-                                                      f"{o['delivery_window_start'].strftime('%I:%M %p')} {o['delivery_window_end'].strftime('%I:%M %p')}" == win_label)]
-                        original_total = len(original_orders_in_window)
+                        # Original Total: Count orders from CSV that originally had this delivery window
+                        # Must count from valid_orders directly (allocation_result.orders_by_window has orders AFTER deliver early moves)
+                        idx = window_labels_list.index(win_label)
+                        win_start, win_end = sorted_windows[idx]
+                        original_orders_for_window = [o for o in valid_orders if
+                                                     o['delivery_window_start'] == win_start and
+                                                     o['delivery_window_end'] == win_end]
+                        original_total = len(original_orders_for_window)
 
-                        # In Window: Orders that stayed in their original window
-                        in_window_count = result.get('orders_kept', 0)
+                        # First, identify orders that moved INTO this window (received)
+                        received_orders = [a for a in allocation_result.moved_early if a.assigned_window == win_label]
+                        received_order_ids = {a.order.get('order_id') for a in received_orders}
+                        received_count = len(received_orders)
 
-                        # Received: Orders that moved INTO this window from a LATER window (deliver early)
-                        received_count = len([a for a in allocation_result.moved_early if a.assigned_window == win_label])
+                        # Kept: Orders that ORIGINALLY were in this window AND stayed after optimization
+                        # Exclude orders that were received from other windows
+                        kept_count = len([k for k in result.get('keep', []) if k.get('order_id') not in received_order_ids])
+
+                        # On Route: Total orders that will be delivered in this window
+                        on_route_count = kept_count + received_count
 
                         # Deliver Early: Orders that moved OUT of this window to an EARLIER window
                         deliver_early_count = len([a for a in allocation_result.moved_early if a.original_window == win_label])
 
-                        # Reschedule: Orders that will be rescheduled to a later date
-                        reschedule_count = len([a for a in allocation_result.reschedule if a.original_window == win_label])
+                        # Reschedule: Orders from BOTH allocator + optimizer
+                        allocator_reschedule = len([a for a in allocation_result.reschedule if a.original_window == win_label])
+                        optimizer_reschedule = len(result.get('reschedule', []))
+                        reschedule_count = allocator_reschedule + optimizer_reschedule
 
-                        # Cancel: Orders that will not be delivered
-                        cancel_count = len([a for a in allocation_result.cancel if a.original_window == win_label])
-
-                        # Optimized Total: Orders that will actually be DELIVERED in this window
-                        optimized_total = in_window_count + received_count
+                        # Cancel: Orders from BOTH allocator + optimizer
+                        allocator_cancel = len([a for a in allocation_result.cancel if a.original_window == win_label])
+                        optimizer_cancel = len(result.get('cancel', []))
+                        cancel_count = allocator_cancel + optimizer_cancel
 
                         window_breakdown.append({
                             "Window": win_label,
                             f"Original Total ({global_original_total})": original_total,
-                            f"Optimized Total ({global_optimized_total})": optimized_total,
-                            f"✅ In Window ({global_in_window})": in_window_count,
+                            f"🚛 On Route ({global_on_route})": on_route_count,
+                            f"✅ Kept ({global_kept})": kept_count,
                             f"📥 Received ({global_received})": received_count,
                             f"⏰ Deliver Early ({global_deliver_early})": deliver_early_count,
                             f"📅 Reschedule ({global_reschedule})": reschedule_count,
@@ -2497,6 +2519,78 @@ def main():
                         # Validation check
                         if global_original_total != len(valid_orders):
                             st.warning(f"⚠️ Count mismatch: Movement table shows {global_original_total} orders but CSV contained {len(valid_orders)} orders.")
+
+                    # Global Movement Breakdowns (no header needed - expanders are self-explanatory)
+                    # Deliver Early breakdown
+                    if allocation_result.moved_early:
+                        with st.expander(f"⏰ Deliver Early ({len(allocation_result.moved_early)} orders)", expanded=False):
+                            deliver_early_data = []
+                            for a in allocation_result.moved_early:
+                                row = create_standard_row(a.order)
+                                row["From Window"] = a.original_window
+                                row["To Window"] = a.assigned_window
+                                row["Reason"] = a.reason
+                                deliver_early_data.append(row)
+                            deliver_early_df = pd.DataFrame(deliver_early_data)
+                            st.dataframe(deliver_early_df, use_container_width=True)
+
+                    # Reschedule breakdown (allocator + optimizer)
+                    all_reschedule_data = []
+
+                    # Add allocator reschedules
+                    for a in allocation_result.reschedule:
+                        row = create_standard_row(a.order)
+                        row["Original Window"] = a.original_window
+                        row["Reschedule Count"] = a.order.get("priorRescheduleCount", 0) or 0
+                        row["Reason"] = a.reason
+                        row["Source"] = "Allocator"
+                        all_reschedule_data.append(row)
+
+                    # Add optimizer reschedules from all windows
+                    for win_label in window_labels_list:
+                        result = window_results.get(win_label)
+                        if result and not result.get('empty', False):
+                            for order in result.get('reschedule', []):
+                                row = create_standard_row(order)
+                                row["Original Window"] = win_label
+                                row["Reschedule Count"] = order.get("priorRescheduleCount", 0) or 0
+                                row["Reason"] = order.get("reason", "Better fit in a different window")
+                                row["Source"] = "Optimizer"
+                                all_reschedule_data.append(row)
+
+                    if all_reschedule_data:
+                        with st.expander(f"📅 Reschedule ({len(all_reschedule_data)} orders)", expanded=False):
+                            reschedule_df = pd.DataFrame(all_reschedule_data)
+                            st.dataframe(reschedule_df, use_container_width=True)
+
+                    # Cancel breakdown (allocator + optimizer cancellations)
+                    all_cancel_data = []
+
+                    # Add allocator cancellations
+                    for a in allocation_result.cancel:
+                        row = create_standard_row(a.order)
+                        row["Original Window"] = a.original_window
+                        row["Reschedule Count"] = a.order.get("priorRescheduleCount", 0) or 0
+                        row["Reason"] = a.reason
+                        row["Source"] = "Allocator"
+                        all_cancel_data.append(row)
+
+                    # Add optimizer cancellations from all windows
+                    for win_label in window_labels_list:
+                        result = window_results.get(win_label)
+                        if result and not result.get('empty', False):
+                            for order in result.get('cancel', []):
+                                row = create_standard_row(order)
+                                row["Original Window"] = win_label
+                                row["Reschedule Count"] = order.get("priorRescheduleCount", 0) or 0
+                                row["Reason"] = order.get("reason", "Geographically isolated from route cluster")
+                                row["Source"] = "Optimizer"
+                                all_cancel_data.append(row)
+
+                    if all_cancel_data:
+                        with st.expander(f"❌ Cancel ({len(all_cancel_data)} orders)", expanded=False):
+                            cancel_df = pd.DataFrame(all_cancel_data)
+                            st.dataframe(cancel_df, use_container_width=True)
 
                     # AI VALIDATION FOR FULL DAY MODE
                     st.markdown("---")
@@ -2741,7 +2835,7 @@ Be concise but thorough. Focus on actionable insights."""
             # Display stored Multiple Windows results (when not running optimization but results exist in session state)
             if valid_orders and mode == "Multiple Windows" and 'full_day_results' in st.session_state and st.session_state.full_day_results:
                 try:
-                    st.markdown("## 🌅 Multiple Windows Optimization")
+                    st.markdown("## 🌅 Multiple Windows")
 
                     # Extract stored results
                     stored = st.session_state.full_day_results
@@ -2761,12 +2855,31 @@ Be concise but thorough. Focus on actionable insights."""
 
                     # Calculate global totals first
                     global_original_total = len(valid_orders)  # All orders from CSV
-                    global_in_window = sum(result.get('orders_kept', 0) for result in window_results.values() if not result.get('empty', False))
-                    global_received = len([a for a in allocation_result.moved_early])  # Orders that moved early become "Received" in target window
-                    global_deliver_early = len([a for a in allocation_result.moved_early])  # Same orders, counted from source window perspective
+
+                    # Global Kept: Need to calculate by excluding received orders from each window's kept count
+                    # We'll calculate this by summing up per-window kept counts (which exclude received)
+                    global_kept_temp = 0  # Will be calculated in the loop below
+
+                    global_received = len([a for a in allocation_result.moved_early])  # Orders that moved in from another window
+                    global_deliver_early = len([a for a in allocation_result.moved_early])  # Same orders, from source window perspective
+
+                    # Global reschedule/cancel: Start with allocator decisions
                     global_reschedule = len([a for a in allocation_result.reschedule])
                     global_cancel = len([a for a in allocation_result.cancel])
-                    global_optimized_total = global_in_window + global_received
+
+                    # Calculate global_kept AND add optimizer reschedule/cancel by summing per-window counts
+                    for win_label in window_labels_list:
+                        result = window_results.get(win_label)
+                        if result and not result.get('empty', False):
+                            received_in_win = {a.order.get('order_id') for a in allocation_result.moved_early if a.assigned_window == win_label}
+                            global_kept_temp += len([k for k in result.get('keep', []) if k.get('order_id') not in received_in_win])
+
+                            # Add optimizer reschedule/cancel from this window
+                            global_reschedule += len(result.get('reschedule', []))
+                            global_cancel += len(result.get('cancel', []))
+
+                    global_kept = global_kept_temp
+                    global_on_route = global_kept + global_received  # Total orders being delivered
 
                     # Build per-window breakdown
                     window_breakdown = []
@@ -2775,35 +2888,45 @@ Be concise but thorough. Focus on actionable insights."""
                         if not result or result.get('empty', False):
                             continue
 
-                        # Original Total: Count all orders that STARTED in this window from CSV
-                        original_orders_in_window = [o for o in valid_orders if o.get('deliveryWindow', '') == win_label or
-                                                     (hasattr(o.get('delivery_window_start'), 'strftime') and
-                                                      f"{o['delivery_window_start'].strftime('%I:%M %p')} {o['delivery_window_end'].strftime('%I:%M %p')}" == win_label)]
-                        original_total = len(original_orders_in_window)
+                        # Original Total: Count orders from CSV that originally had this delivery window
+                        # Must count from valid_orders directly (allocation_result.orders_by_window has orders AFTER deliver early moves)
+                        idx = window_labels_list.index(win_label)
+                        win_start, win_end = sorted_windows[idx]
+                        original_orders_for_window = [o for o in valid_orders if
+                                                     o['delivery_window_start'] == win_start and
+                                                     o['delivery_window_end'] == win_end]
+                        original_total = len(original_orders_for_window)
 
-                        # In Window: Orders that stayed in their original window
-                        in_window_count = result.get('orders_kept', 0)
+                        # First, identify orders that moved INTO this window (received)
+                        received_orders = [a for a in allocation_result.moved_early if a.assigned_window == win_label]
+                        received_order_ids = {a.order.get('order_id') for a in received_orders}
+                        received_count = len(received_orders)
 
-                        # Received: Orders that moved INTO this window from a LATER window (deliver early)
-                        received_count = len([a for a in allocation_result.moved_early if a.assigned_window == win_label])
+                        # Kept: Orders that ORIGINALLY were in this window AND stayed after optimization
+                        # Exclude orders that were received from other windows
+                        kept_count = len([k for k in result.get('keep', []) if k.get('order_id') not in received_order_ids])
+
+                        # On Route: Total orders that will be delivered in this window
+                        on_route_count = kept_count + received_count
 
                         # Deliver Early: Orders that moved OUT of this window to an EARLIER window
                         deliver_early_count = len([a for a in allocation_result.moved_early if a.original_window == win_label])
 
-                        # Reschedule: Orders that will be rescheduled to a later date
-                        reschedule_count = len([a for a in allocation_result.reschedule if a.original_window == win_label])
+                        # Reschedule: Orders from BOTH allocator + optimizer
+                        allocator_reschedule = len([a for a in allocation_result.reschedule if a.original_window == win_label])
+                        optimizer_reschedule = len(result.get('reschedule', []))
+                        reschedule_count = allocator_reschedule + optimizer_reschedule
 
-                        # Cancel: Orders that will not be delivered
-                        cancel_count = len([a for a in allocation_result.cancel if a.original_window == win_label])
-
-                        # Optimized Total: Orders that will actually be DELIVERED in this window
-                        optimized_total = in_window_count + received_count
+                        # Cancel: Orders from BOTH allocator + optimizer
+                        allocator_cancel = len([a for a in allocation_result.cancel if a.original_window == win_label])
+                        optimizer_cancel = len(result.get('cancel', []))
+                        cancel_count = allocator_cancel + optimizer_cancel
 
                         window_breakdown.append({
                             "Window": win_label,
                             f"Original Total ({global_original_total})": original_total,
-                            f"Optimized Total ({global_optimized_total})": optimized_total,
-                            f"✅ In Window ({global_in_window})": in_window_count,
+                            f"🚛 On Route ({global_on_route})": on_route_count,
+                            f"✅ Kept ({global_kept})": kept_count,
                             f"📥 Received ({global_received})": received_count,
                             f"⏰ Deliver Early ({global_deliver_early})": deliver_early_count,
                             f"📅 Reschedule ({global_reschedule})": reschedule_count,
@@ -2819,6 +2942,78 @@ Be concise but thorough. Focus on actionable insights."""
                         if global_original_total != len(valid_orders):
                             st.warning(f"⚠️ Count mismatch: Movement table shows {global_original_total} orders but CSV contained {len(valid_orders)} orders.")
 
+                    # Global Movement Breakdowns (no header needed - expanders are self-explanatory)
+                    # Deliver Early breakdown
+                    if allocation_result.moved_early:
+                        with st.expander(f"⏰ Deliver Early ({len(allocation_result.moved_early)} orders)", expanded=False):
+                            deliver_early_data = []
+                            for a in allocation_result.moved_early:
+                                row = create_standard_row(a.order)
+                                row["From Window"] = a.original_window
+                                row["To Window"] = a.assigned_window
+                                row["Reason"] = a.reason
+                                deliver_early_data.append(row)
+                            deliver_early_df = pd.DataFrame(deliver_early_data)
+                            st.dataframe(deliver_early_df, use_container_width=True)
+
+                    # Reschedule breakdown (allocator + optimizer)
+                    all_reschedule_data = []
+
+                    # Add allocator reschedules
+                    for a in allocation_result.reschedule:
+                        row = create_standard_row(a.order)
+                        row["Original Window"] = a.original_window
+                        row["Reschedule Count"] = a.order.get("priorRescheduleCount", 0) or 0
+                        row["Reason"] = a.reason
+                        row["Source"] = "Allocator"
+                        all_reschedule_data.append(row)
+
+                    # Add optimizer reschedules from all windows
+                    for win_label in window_labels_list:
+                        result = window_results.get(win_label)
+                        if result and not result.get('empty', False):
+                            for order in result.get('reschedule', []):
+                                row = create_standard_row(order)
+                                row["Original Window"] = win_label
+                                row["Reschedule Count"] = order.get("priorRescheduleCount", 0) or 0
+                                row["Reason"] = order.get("reason", "Better fit in a different window")
+                                row["Source"] = "Optimizer"
+                                all_reschedule_data.append(row)
+
+                    if all_reschedule_data:
+                        with st.expander(f"📅 Reschedule ({len(all_reschedule_data)} orders)", expanded=False):
+                            reschedule_df = pd.DataFrame(all_reschedule_data)
+                            st.dataframe(reschedule_df, use_container_width=True)
+
+                    # Cancel breakdown (allocator + optimizer cancellations)
+                    all_cancel_data = []
+
+                    # Add allocator cancellations
+                    for a in allocation_result.cancel:
+                        row = create_standard_row(a.order)
+                        row["Original Window"] = a.original_window
+                        row["Reschedule Count"] = a.order.get("priorRescheduleCount", 0) or 0
+                        row["Reason"] = a.reason
+                        row["Source"] = "Allocator"
+                        all_cancel_data.append(row)
+
+                    # Add optimizer cancellations from all windows
+                    for win_label in window_labels_list:
+                        result = window_results.get(win_label)
+                        if result and not result.get('empty', False):
+                            for order in result.get('cancel', []):
+                                row = create_standard_row(order)
+                                row["Original Window"] = win_label
+                                row["Reschedule Count"] = order.get("priorRescheduleCount", 0) or 0
+                                row["Reason"] = order.get("reason", "Geographically isolated from route cluster")
+                                row["Source"] = "Optimizer"
+                                all_cancel_data.append(row)
+
+                    if all_cancel_data:
+                        with st.expander(f"❌ Cancel ({len(all_cancel_data)} orders)", expanded=False):
+                            cancel_df = pd.DataFrame(all_cancel_data)
+                            st.dataframe(cancel_df, use_container_width=True)
+
                     st.markdown("---")
 
                     # Show per-window results
@@ -2833,46 +3028,65 @@ Be concise but thorough. Focus on actionable insights."""
                                 st.info("No orders were assigned to this window after allocation.")
                             continue
 
-                        with st.expander(f"**{win_label}** — {result['orders_kept']} orders", expanded=True):
+                        with st.expander(f"**{win_label}** — {result['orders_kept']} orders on route", expanded=True):
                             from allocator import window_duration_minutes
                             win_duration = window_duration_minutes(win_start, win_end)
 
                             # KPI Dashboard
-                            col1, col2, col3, col4 = st.columns(4)
+                            col1, col2, col3, col4, col5 = st.columns(5)
 
                             win_capacity = window_capacities.get(win_label, 0)
                             kept_units = result['total_units']
                             route_time = result.get('route_time', 0)
                             capacity_pct = (kept_units / win_capacity * 100) if win_capacity > 0 else 0
-                            efficiency = (result['orders_kept'] / (route_time / 60)) if route_time > 0 else 0
+
+                            # Calculate orders kept (stayed) vs orders added (received)
+                            # First, identify which orders in result['keep'] were received from other windows
+                            received_in_window = [a for a in allocation_result.moved_early if a.assigned_window == win_label]
+                            received_order_ids = {a.order.get('order_id') for a in received_in_window}
+
+                            # Count how many kept orders are original vs received
+                            orders_kept_stayed = sum(1 for k in result['keep'] if k.get('order_id') not in received_order_ids)
+                            orders_added_received = sum(1 for k in result['keep'] if k.get('order_id') in received_order_ids)
+                            total_on_route = orders_kept_stayed + orders_added_received  # Should equal result['orders_kept']
+                            efficiency = (total_on_route / (route_time / 60)) if route_time > 0 else 0
 
                             with col1:
-                                st.metric("Orders Kept", result['orders_kept'])
+                                st.metric("Orders Kept", orders_kept_stayed)
                             with col2:
+                                st.metric("Received", orders_added_received)
+                            with col3:
                                 st.metric("Capacity Used", f"{kept_units}/{win_capacity}",
                                          delta=f"{capacity_pct:.0f}%")
-                            with col3:
+                            with col4:
                                 st.metric("Route Time", f"{route_time} min",
                                          delta=f"{(route_time/win_duration*100):.0f}% of window")
-                            with col4:
+                            with col5:
                                 st.metric("Efficiency", f"{efficiency:.1f} orders/hr")
 
-                            st.markdown(f"**Route Summary**: {result['orders_kept']} orders, {kept_units} units")
+                            # Calculate breakdown: original orders that stayed vs received
+                            received_in_window = [a for a in allocation_result.moved_early if a.assigned_window == win_label]
+                            received_order_ids = {a.order.get('order_id') for a in received_in_window}
 
-                            # Show In Window orders (all orders on route in this window)
-                            # This includes both orders that stayed AND orders that moved in (Received)
+                            # Orders that stayed = kept orders that are NOT in the received list
+                            orders_stayed = len([k for k in result.get('keep', []) if k.get('order_id') not in received_order_ids])
+                            orders_received = len(received_in_window)
+
+                            # Total on route = result['orders_kept'] (which already includes both stayed + received)
+                            total_on_route_display = result['orders_kept']
+
+                            st.markdown(f"**Route Summary**: {total_on_route_display} orders on route ({orders_stayed} kept + {orders_received} added), {kept_units} units")
+
+                            # Show On Route orders (all orders on route in this window)
+                            # This includes both orders that stayed (Kept) AND orders that moved in (Received)
                             if result['keep']:
-                                # Count received orders in this window
-                                received_in_window = [a for a in allocation_result.moved_early if a.assigned_window == win_label]
-                                received_order_ids = {a.order.get('order_id') for a in received_in_window}
-
-                                st.markdown(f"#### ✅ In Window ({len(result['keep'])} orders)")
+                                st.markdown(f"#### 🚛 On Route ({len(result['keep'])} orders)")
                                 keep_data = []
                                 for k in sorted(result['keep'], key=lambda x: x.get("sequence_index", 0)):
                                     row = {"Seq": k.get("sequence_index", 0) + 1}
                                     row.update(create_standard_row(k))
 
-                                    # Add Origin column: "Original" if stayed, "Received" if moved in
+                                    # Add Origin column: "Original" if stayed (kept), "Received" if moved in
                                     if k.get('order_id') in received_order_ids:
                                         row["Origin"] = "📥 Received"
                                     else:
