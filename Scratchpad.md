@@ -460,6 +460,8 @@ Go from 8 to 6 and remove load factor % and instead of having keep orders and to
 we dont need to show fulfillment, default capcity in side bar as these can be configured if and when a dispatcher wants to run a single window optimization, also the fulfillment location should auto popoulate from the import, so I would remove that completley. Servie Time can stay and test mode toffle can stay
 
 # Lost changes on 2/17 Recovery
+
+sa
 ⏺ Compact summary
   ⎿  This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the
      conversation.
